@@ -815,6 +815,45 @@ export default function App() {
     }, 50);
   };
 
+  // Edit chapter note (chapter number and chapter name)
+  const handleEditNote = async (
+    studentId: string,
+    subject: string,
+    noteId: string,
+    newChapterNo: number,
+    newChapterName: string
+  ) => {
+    let updated: Student | null = null;
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id === studentId) {
+          const subjectNotes = s.notes[subject] || [];
+          updated = {
+            ...s,
+            notes: {
+              ...s.notes,
+              [subject]: subjectNotes.map((n) => {
+                if (n.id === noteId) {
+                  return {
+                    ...n,
+                    chapterNo: newChapterNo,
+                    chapterName: newChapterName
+                  };
+                }
+                return n;
+              }),
+            },
+          };
+          return updated;
+        }
+        return s;
+      })
+    );
+    if (updated) {
+      await saveStudentDoc(updated);
+    }
+  };
+
   // Update full student record
   const handleUpdateStudent = async (updatedStudent: Student) => {
     setStudents((prev) =>
@@ -968,6 +1007,9 @@ export default function App() {
           onBack={() => setActiveSubject(null)}
           onAddNote={(chapterNo, chapterName, pdfUrl, pdfFileName) =>
             handleAddNote(activeStudent.id, activeSubject, chapterNo, chapterName, pdfUrl, pdfFileName)
+          }
+          onEditNote={(noteId, chapterNo, chapterName) =>
+            handleEditNote(activeStudent.id, activeSubject, noteId, chapterNo, chapterName)
           }
           onDeleteNote={(noteId) =>
             handleDeleteNote(activeStudent.id, activeSubject, noteId)

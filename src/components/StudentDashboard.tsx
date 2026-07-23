@@ -32,6 +32,7 @@ import {
   ReceiptText,
   TrendingUp,
   CheckCircle2,
+  Search,
   Smartphone,
   Landmark,
   Bell,
@@ -1557,12 +1558,60 @@ export function StudentMyTab({
     }
   };
 
-  const selectedNotes = useMemo(() => {
-    if (!selectedSubject) return [] as ChapterNote[];
-    return ((localStudent.notes?.[selectedSubject] || []) as ChapterNote[])
-      .slice()
-      .sort((a, b) => (a.chapterNo || 0) - (b.chapterNo || 0));
-  }, [selectedSubject, localStudent.notes]);
+  const [noteSearchQuery, setNoteSearchQuery] = useState("");
+
+  interface StudentChapterGroup {
+    chapterNo: number;
+    chapterName: string;
+    notes: ChapterNote[];
+  }
+
+  const selectedChapterGroups = useMemo(() => {
+    if (!selectedSubject) return [] as StudentChapterGroup[];
+    const raw = ((localStudent.notes?.[selectedSubject] || []) as ChapterNote[]).slice();
+
+    const query = noteSearchQuery.trim().toLowerCase();
+    const filtered = query
+      ? raw.filter((note) => {
+          const matchSubj = (selectedSubject || "").toLowerCase().includes(query);
+          const matchChNo = `chapter ${note.chapterNo}`.toLowerCase().includes(query) || `${note.chapterNo}`.includes(query);
+          const matchChName = (note.chapterName || "").toLowerCase().includes(query);
+          const matchFile = (note.pdfFileName || "").toLowerCase().includes(query);
+          return matchSubj || matchChNo || matchChName || matchFile;
+        })
+      : raw;
+
+    const groupsMap = new Map<number, StudentChapterGroup>();
+    for (const note of filtered) {
+      const chNo = Number(note.chapterNo) || 0;
+      if (!groupsMap.has(chNo)) {
+        groupsMap.set(chNo, {
+          chapterNo: chNo,
+          chapterName: note.chapterName || `Chapter ${chNo}`,
+          notes: []
+        });
+      }
+      const group = groupsMap.get(chNo)!;
+      if (note.chapterName && (!group.chapterName || group.chapterName.startsWith("Chapter"))) {
+        group.chapterName = note.chapterName;
+      }
+      group.notes.push(note);
+    }
+
+    // Sort chapters by Chapter Number in ascending numerical order
+    const result = Array.from(groupsMap.values()).sort((a, b) => a.chapterNo - b.chapterNo);
+
+    // If multiple PDFs exist within the same chapter, sort their names alphabetically (A-Z)
+    for (const group of result) {
+      group.notes.sort((a, b) => {
+        const nameA = (a.pdfFileName || a.chapterName || "").toLowerCase();
+        const nameB = (b.pdfFileName || b.chapterName || "").toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
+    }
+
+    return result;
+  }, [selectedSubject, localStudent.notes, noteSearchQuery]);
 
   const sortedSubjects = useMemo(() => {
     return [...(localStudent.enrolledSubjects || [])].sort((a, b) => a.localeCompare(b));
@@ -1759,8 +1808,28 @@ export function StudentMyTab({
                 </div>
               </div>
 
+              {/* Search Bar for Notes */}
+              <div className="relative mb-3">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Search by subject, chapter number, or chapter name..."
+                  value={noteSearchQuery}
+                  onChange={(e) => setNoteSearchQuery(e.target.value)}
+                  className="w-full pl-8 pr-7 py-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-xs font-semibold text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-hidden focus:border-blue-500"
+                />
+                {noteSearchQuery && (
+                  <button
+                    onClick={() => setNoteSearchQuery("")}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
               <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-3 scrollbar-thin" id="study-right-notes">
-                {selectedNotes.length === 0 ? (
+                {selectedChapterGroups.length === 0 ? (
                   <div className="flex-1 flex flex-col items-center justify-center text-center p-8 my-auto border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl bg-slate-50/20 dark:bg-slate-950/10">
                     <div className="relative mb-4">
                       <div className="p-4 bg-slate-100 dark:bg-slate-800 rounded-full text-slate-400 dark:text-slate-500 shadow-xs">
@@ -1770,81 +1839,185 @@ export function StudentMyTab({
                         <AlertCircle className="w-4 h-4" />
                       </div>
                     </div>
-                    <h4 className="text-sm font-black text-slate-750 dark:text-slate-200">No notes are available for this subject.</h4>
+                    <h4 className="text-sm font-black text-slate-750 dark:text-slate-200">
+                      {noteSearchQuery ? "No matching chapters found." : "No notes are available for this subject."}
+                    </h4>
                     <p className="text-[11px] text-slate-400 dark:text-slate-500 max-w-xs mt-1">
-                      Your tutor hasn't uploaded any PDF chapters for {selectedSubject} yet. Please check back later.
+                      {noteSearchQuery ? "Try searching with a different term." : `Your tutor hasn't uploaded any PDF chapters for ${selectedSubject} yet. Please check back later.`}
                     </p>
                   </div>
                 ) : (
-                  selectedNotes.map((note) => {
-                    const progRecord = getChapterProgressRecord(note.id, selectedSubject, localStudent.chapterProgress);
+                  selectedChapterGroups.map((group) => {
+                    if (group.notes.length === 1) {
+                      const note = group.notes[0];
+                      const progRecord = getChapterProgressRecord(note.id, selectedSubject, localStudent.chapterProgress);
 
-                    return (
-                      <div key={note.id} className="rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-950/20 p-3.5 hover:border-slate-200 dark:hover:border-slate-750 hover:bg-slate-50/80 dark:hover:bg-slate-950/30 transition-all flex flex-col gap-3">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                          <div className="flex items-start gap-3 min-w-0">
-                            <div className="p-2.5 bg-red-50 dark:bg-red-950/30 rounded-xl text-red-500 dark:text-red-400 shrink-0 border border-red-100/60 dark:border-red-900/30">
-                              <FileText className="w-5 h-5" />
-                            </div>
-                            <div className="min-w-0">
-                              <p className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-400 dark:text-slate-500">Chapter {note.chapterNo}</p>
-                              <h4 className="text-xs sm:text-sm font-black text-slate-800 dark:text-slate-100 truncate pr-4">{note.chapterName}</h4>
-                              <div className="flex flex-wrap items-center gap-1.5 mt-1 text-[9px] font-semibold text-slate-400">
-                                {note.createdAt && (
-                                  <span className="bg-slate-100/80 dark:bg-slate-800 px-1.5 py-0.5 rounded-md">
-                                    Added {formatDate(note.createdAt)}
-                                  </span>
-                                )}
-                                <span className="bg-slate-100/80 dark:bg-slate-800 px-1.5 py-0.5 rounded-md">
-                                  Size: {getFileSizeStr(note.pdfUrl, note.chapterNo)}
-                                </span>
+                      return (
+                        <div 
+                          key={note.id} 
+                          onClick={() => handlePreviewPdf(note)}
+                          className="rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-950/20 p-3.5 hover:border-blue-300 dark:hover:border-blue-800 hover:bg-blue-50/20 dark:hover:bg-blue-950/20 transition-all flex flex-col gap-3 cursor-pointer group"
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="p-2.5 bg-blue-50 dark:bg-blue-950/40 rounded-xl text-blue-600 dark:text-blue-400 shrink-0 border border-blue-100/60 dark:border-blue-900/30 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                                <FileText className="w-5 h-5" />
+                              </div>
+                              <div className="min-w-0">
+                                <h4 className="text-xs sm:text-sm font-black text-slate-800 dark:text-slate-100 truncate pr-4 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                                  Chapter {group.chapterNo} - {group.chapterName}
+                                </h4>
+                                <div className="flex flex-wrap items-center gap-1.5 mt-1 text-[9px] font-semibold text-slate-400">
+                                  {note.pdfFileName && (
+                                    <span className="bg-slate-100/80 dark:bg-slate-800 px-1.5 py-0.5 rounded-md truncate max-w-[180px]">
+                                      {note.pdfFileName}
+                                    </span>
+                                  )}
+                                  {note.createdAt && (
+                                    <span className="bg-slate-100/80 dark:bg-slate-800 px-1.5 py-0.5 rounded-md">
+                                      Added {formatDate(note.createdAt)}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             </div>
-                          </div>
 
-                          <div className="flex flex-wrap items-center gap-2 self-end sm:self-center">
-                            <button
-                              type="button"
-                              onClick={() => handlePreviewPdf(note)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold hover:bg-blue-50 dark:hover:bg-blue-950 hover:text-blue-600 dark:hover:text-blue-400 transition-all cursor-pointer shadow-xs active:scale-95"
-                              title="View PDF"
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                              <span>View</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => setProgressModalNote(note)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-all cursor-pointer active:scale-95"
-                              title="Chapter Progress"
-                            >
-                              <Sparkles className="w-3.5 h-3.5" />
-                              <span>Progress</span>
-                            </button>
-
-                            {isAdmin && onDeleteNote && selectedSubject && (
+                            <div className="flex flex-wrap items-center gap-2 self-end sm:self-center shrink-0" onClick={(e) => e.stopPropagation()}>
                               <button
                                 type="button"
-                                onClick={() => setDeleteNoteTarget({ subject: selectedSubject, noteId: note.id })}
-                                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200/60 dark:border-rose-800/60 text-rose-600 dark:text-rose-400 text-xs font-bold hover:bg-rose-100 dark:hover:bg-rose-900/50 transition-all cursor-pointer shadow-xs active:scale-95"
-                                title="Delete Note"
+                                onClick={() => handlePreviewPdf(note)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold hover:bg-blue-50 dark:hover:bg-blue-950 hover:text-blue-600 dark:hover:text-blue-400 transition-all cursor-pointer shadow-xs active:scale-95"
+                                title="View PDF"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span className="hidden sm:inline">Delete</span>
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>View</span>
                               </button>
-                            )}
+
+                              <button
+                                type="button"
+                                onClick={() => setProgressModalNote(note)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-all cursor-pointer active:scale-95"
+                                title="Chapter Progress"
+                              >
+                                <Sparkles className="w-3.5 h-3.5" />
+                                <span>Progress</span>
+                              </button>
+
+                              {isAdmin && onDeleteNote && selectedSubject && (
+                                <button
+                                  type="button"
+                                  onClick={() => setDeleteNoteTarget({ subject: selectedSubject, noteId: note.id })}
+                                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200/60 dark:border-rose-800/60 text-rose-600 dark:text-rose-400 text-xs font-bold hover:bg-rose-100 dark:hover:bg-rose-900/50 transition-all cursor-pointer shadow-xs active:scale-95"
+                                  title="Delete Note"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span className="hidden sm:inline">Delete</span>
+                                </button>
+                              )}
+                            </div>
                           </div>
+
+                          {/* Remark Display: First line only if remarks exist */}
+                          {progRecord?.remarks ? (
+                            <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80">
+                              <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                                <span className="font-bold text-slate-700 dark:text-slate-300">Remark:</span> {progRecord.remarks.split("\n")[0]}
+                              </p>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    }
+
+                    // Multiple PDFs in this Chapter
+                    return (
+                      <div
+                        key={`chapter-group-${group.chapterNo}`}
+                        className="rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-950/20 p-3.5 flex flex-col gap-3"
+                      >
+                        <div className="flex items-center justify-between pb-2 border-b border-slate-150/60 dark:border-slate-800">
+                          <div className="flex items-center gap-2.5">
+                            <div className="p-2 bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 rounded-xl">
+                              <BookOpen className="w-4 h-4" />
+                            </div>
+                            <h4 className="text-xs sm:text-sm font-black text-slate-800 dark:text-slate-100">
+                              Chapter {group.chapterNo} - {group.chapterName}
+                            </h4>
+                          </div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-lg">
+                            {group.notes.length} PDFs
+                          </span>
                         </div>
 
-                        {/* Remark Display: First line only if remarks exist */}
-                        {progRecord?.remarks ? (
-                          <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80">
-                            <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
-                              <span className="font-bold text-slate-700 dark:text-slate-300">Remark:</span> {progRecord.remarks.split("\n")[0]}
-                            </p>
-                          </div>
-                        ) : null}
+                        <div className="flex flex-col gap-2">
+                          {group.notes.map((note) => {
+                            const progRecord = getChapterProgressRecord(note.id, selectedSubject, localStudent.chapterProgress);
+                            return (
+                              <div
+                                key={note.id}
+                                onClick={() => handlePreviewPdf(note)}
+                                className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-150/60 dark:border-slate-800/80 flex flex-col gap-2 hover:border-blue-300 dark:hover:border-blue-800 hover:bg-blue-50/20 dark:hover:bg-blue-950/20 transition-all cursor-pointer group"
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                                    <div className="flex flex-col min-w-0">
+                                      <span className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                                        {note.pdfFileName || note.chapterName}
+                                      </span>
+                                      {note.createdAt && (
+                                        <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                                          Added {formatDate(note.createdAt)}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                                    <button
+                                      type="button"
+                                      onClick={() => handlePreviewPdf(note)}
+                                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold hover:bg-blue-50 dark:hover:bg-blue-950 hover:text-blue-600 dark:hover:text-blue-400 transition-all cursor-pointer shadow-xs active:scale-95"
+                                      title="View PDF"
+                                    >
+                                      <Eye className="w-3.5 h-3.5" />
+                                      <span>View</span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => setProgressModalNote(note)}
+                                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-all cursor-pointer active:scale-95"
+                                      title="Chapter Progress"
+                                    >
+                                      <Sparkles className="w-3.5 h-3.5" />
+                                      <span>Progress</span>
+                                    </button>
+
+                                    {isAdmin && onDeleteNote && selectedSubject && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setDeleteNoteTarget({ subject: selectedSubject, noteId: note.id })}
+                                        className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200/60 dark:border-rose-800/60 text-rose-600 dark:text-rose-400 text-xs font-bold hover:bg-rose-100 dark:hover:bg-rose-900/50 transition-all cursor-pointer shadow-xs active:scale-95"
+                                        title="Delete Note"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {progRecord?.remarks ? (
+                                  <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800/80">
+                                    <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 truncate">
+                                      <span className="font-bold text-slate-700 dark:text-slate-300">Remark:</span> {progRecord.remarks.split("\n")[0]}
+                                    </p>
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     );
                   })
