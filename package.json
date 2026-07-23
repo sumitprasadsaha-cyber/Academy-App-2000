@@ -1,7 +1,7 @@
 {
   "name": "tuition-ledger-management",
   "private": true,
-  "version": "3.9.3",
+  "version": "3.9.5",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -13,9 +13,11 @@
     "test:pdf-storage-flow": "tsx scripts/testPdfStorageFlow.ts"
   },
   "dependencies": {
+    "@capacitor-community/file-opener": "^8.0.1",
     "@capacitor/android": "^8.4.2",
     "@capacitor/cli": "^8.4.2",
     "@capacitor/core": "^8.4.2",
+    "@capacitor/filesystem": "^8.1.2",
     "@google/genai": "^2.4.0",
     "@supabase/supabase-js": "^2.110.7",
     "@tailwindcss/vite": "^4.1.14",

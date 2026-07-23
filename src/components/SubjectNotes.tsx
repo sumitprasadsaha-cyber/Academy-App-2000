@@ -494,20 +494,16 @@ export default function SubjectNotes({
     </div>
     </div>
 
-      {/* --- IN-APP PDF PREVIEW DRAWER MODAL --- */}
+      {/* --- NATIVE PDF LAUNCHER MODAL --- */}
       {activePreviewPdf && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-4 bg-black/70 backdrop-blur-sm animate-fadeIn" id="pdf-preview-modal" onClick={() => setActivePreviewPdf(null)}>
-          <div className="relative w-full h-full sm:h-[90vh] max-w-4xl bg-white dark:bg-slate-950 rounded-none sm:rounded-2xl p-0 shadow-2xl z-10 flex flex-col overflow-hidden border border-slate-100 dark:border-slate-900" onClick={(e) => e.stopPropagation()}>
-            <PdfViewer
-              url={activePreviewPdf.url}
-              title={activePreviewPdf.title}
-              onClose={() => setActivePreviewPdf(null)}
-              noteId={activePreviewPdf.noteId}
-              storagePath={activePreviewPdf.storagePath}
-              bucket={activePreviewPdf.bucket}
-            />
-          </div>
-        </div>
+        <PdfViewer
+          url={activePreviewPdf.url}
+          title={activePreviewPdf.title}
+          onClose={() => setActivePreviewPdf(null)}
+          noteId={activePreviewPdf.noteId}
+          storagePath={activePreviewPdf.storagePath}
+          bucket={activePreviewPdf.bucket}
+        />
       )}
 
       {/* --- CONFIRM DELETE MODAL --- */}

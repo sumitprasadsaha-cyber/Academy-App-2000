@@ -14,7 +14,6 @@ import Login from "./components/Login";
 import StudentDashboard, { StudentMyTab } from "./components/StudentDashboard";
 import AIInsights from "./components/AIInsights";
 import { getMonthsUpToCurrent } from "./utils/monthHelper";
-import { preloadPdfJs } from "./components/PdfViewer";
 import { getFirebaseAuth, createNewUserAuth } from "./lib/firebase";
 import { 
   getUserDocument, 
@@ -87,11 +86,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("tuition_auth_state", JSON.stringify(auth));
   }, [auth]);
-
-  // Preload PDF.js library in background on mount for lightning-fast viewing
-  useEffect(() => {
-    preloadPdfJs();
-  }, []);
 
   // Synchronize with Firebase Authentication state
   useEffect(() => {
