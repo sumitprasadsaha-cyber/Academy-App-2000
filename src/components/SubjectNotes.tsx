@@ -460,17 +460,6 @@ export default function SubjectNotes({
                     <Eye className="w-4 h-4" />
                   </button>
 
-                  {/* Download PDF */}
-                  <button
-                    type="button"
-                    onClick={() => handleDownloadPdf(note)}
-                    disabled={downloadingNoteId === note.id}
-                    className="p-2 bg-slate-50 hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 dark:bg-slate-800 dark:hover:bg-emerald-950/30 rounded-xl transition-all border border-slate-100 dark:border-slate-800 cursor-pointer disabled:opacity-50"
-                    title="Download PDF"
-                  >
-                    <Download className="w-4 h-4" />
-                  </button>
-
                   {/* Delete note */}
                   {isAdmin && (
                     <button

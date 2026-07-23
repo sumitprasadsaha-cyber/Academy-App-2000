@@ -1,7 +1,6 @@
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import {
   FileText,
-  Download,
   X,
   AlertTriangle,
   RefreshCw,
@@ -13,13 +12,12 @@ import {
   ChevronRight,
   Maximize2,
   Smartphone,
-  Eye,
   ArrowLeft,
   ExternalLink,
-  Bug,
   CheckCircle2,
   Database,
-  Info
+  Info,
+  Download
 } from "lucide-react";
 import { Capacitor } from "@capacitor/core";
 import { getPdfDownloadUrl } from "../lib/pdfService";
@@ -91,31 +89,31 @@ function PdfPage({ pdf, pageNum, scale, rotation, onInView, isSearchMatch }: Pdf
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isVisible, setIsVisible] = useState(false);
-  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
+  const [pageSize, setPageSize] = useState<{ width: number; height: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
   const renderTaskRef = useRef<any>(null);
 
-  // Get viewport dimensions once to set container aspect ratio
+  // Fetch unscaled dimensions once to establish strict layout dimensions and prevent scroll wobbling
   useEffect(() => {
     let active = true;
-    async function getPageSize() {
+    async function fetchDimensions() {
       try {
         const page = await pdf.getPage(pageNum);
         if (!active) return;
         const viewport = page.getViewport({ scale: 1, rotation });
-        setAspectRatio(viewport.width / viewport.height);
+        setPageSize({ width: viewport.width, height: viewport.height });
       } catch (err) {
-        console.error(`[PdfPage] Error fetching dimensions for page ${pageNum}:`, err);
+        console.error(`[PdfPage] Error getting dimensions for page ${pageNum}:`, err);
       }
     }
-    getPageSize();
+    fetchDimensions();
     return () => {
       active = false;
     };
   }, [pdf, pageNum, rotation]);
 
-  // IntersectionObserver for page virtualization and active page tracking
+  // IntersectionObserver for page virtualization and page tracking
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -130,8 +128,8 @@ function PdfPage({ pdf, pageNum, scale, rotation, onInView, isSearchMatch }: Pdf
       },
       {
         root: null,
-        rootMargin: "400px", // Pre-render 400px before page enters viewport
-        threshold: 0.15
+        rootMargin: "600px", // Pre-render pages 600px ahead for ultra-smooth scrolling
+        threshold: 0.1
       }
     );
 
@@ -141,15 +139,15 @@ function PdfPage({ pdf, pageNum, scale, rotation, onInView, isSearchMatch }: Pdf
     };
   }, [pageNum, onInView]);
 
-  // Render high-DPI canvas when page is visible
+  // High-DPI canvas rendering when page is in or near viewport
   useEffect(() => {
     let active = true;
 
     if (renderTaskRef.current) {
       try {
         renderTaskRef.current.cancel();
-      } catch (e) {
-        // ignore cancellation exception
+      } catch {
+        // ignore cancellation
       }
       renderTaskRef.current = null;
     }
@@ -170,15 +168,15 @@ function PdfPage({ pdf, pageNum, scale, rotation, onInView, isSearchMatch }: Pdf
         const canvas = canvasRef.current;
         if (!canvas || !active) return;
 
-        const context = canvas.getContext("2d");
+        const context = canvas.getContext("2d", { alpha: false });
         if (!context) return;
 
-        // Device Pixel Ratio for razor-sharp vector text rendering
+        // Razor-sharp rendering on Retina / High-DPI displays
         const dpr = window.devicePixelRatio || 1;
-        canvas.height = viewport.height * dpr;
-        canvas.width = viewport.width * dpr;
-        canvas.style.height = `${viewport.height}px`;
-        canvas.style.width = `${viewport.width}px`;
+        canvas.height = Math.floor(viewport.height * dpr);
+        canvas.width = Math.floor(viewport.width * dpr);
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
 
         context.scale(dpr, dpr);
 
@@ -207,67 +205,72 @@ function PdfPage({ pdf, pageNum, scale, rotation, onInView, isSearchMatch }: Pdf
       }
     }
 
-    const timeoutId = setTimeout(() => {
+    const timer = setTimeout(() => {
       renderPage();
-    }, 30);
+    }, 10);
 
     return () => {
       active = false;
-      clearTimeout(timeoutId);
+      clearTimeout(timer);
       if (renderTaskRef.current) {
         try {
           renderTaskRef.current.cancel();
-        } catch (e) {
+        } catch {
           // ignore
         }
       }
     };
   }, [pdf, pageNum, scale, rotation, isVisible]);
 
-  const heightStyle = aspectRatio ? { aspectRatio: `${aspectRatio}` } : { minHeight: "450px" };
+  const targetWidth = pageSize ? Math.floor(pageSize.width * scale) : undefined;
+  const targetHeight = pageSize ? Math.floor(pageSize.height * scale) : 600;
 
   return (
     <div
       id={`pdf-page-${pageNum}`}
       ref={containerRef}
-      style={heightStyle}
-      className={`relative w-full my-3 flex flex-col items-center justify-center bg-white dark:bg-slate-900 rounded-xl shadow-md border transition-all duration-200 ${
+      style={{
+        width: targetWidth ? `${targetWidth}px` : "100%",
+        height: `${targetHeight}px`,
+        maxWidth: "100%"
+      }}
+      className={`relative my-4 flex items-center justify-center bg-white dark:bg-slate-900 rounded-xl shadow-lg border shrink-0 transition-all duration-150 ${
         isSearchMatch
-          ? "border-amber-400 ring-2 ring-amber-400/50"
-          : "border-slate-200 dark:border-slate-800"
+          ? "border-amber-400 ring-4 ring-amber-400/40"
+          : "border-slate-200/90 dark:border-slate-800"
       }`}
     >
-      {/* Page number badge */}
-      <div className="absolute top-2.5 left-2.5 z-10 text-[11px] font-extrabold text-slate-500 dark:text-slate-400 select-none bg-white/90 dark:bg-slate-900/90 px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-800 shadow-2xs backdrop-blur-xs">
-        Page {pageNum} of {pdf.numPages}
+      {/* Page Badge */}
+      <div className="absolute top-3 left-3 z-10 text-[11px] font-black text-slate-600 dark:text-slate-300 select-none bg-white/95 dark:bg-slate-900/95 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 shadow-xs backdrop-blur-md">
+        {pageNum} / {pdf.numPages}
       </div>
 
       {isVisible ? (
         <>
           {loading && !canvasRef.current?.width && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-50/80 dark:bg-slate-950/80 rounded-xl z-10">
-              <div className="animate-spin rounded-full h-7 w-7 border-b-2 border-blue-500 mb-2"></div>
-              <span className="text-xs text-slate-500 font-semibold">Rendering Page {pageNum}...</span>
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-100/90 dark:bg-slate-900/90 rounded-xl z-10">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mb-2"></div>
+              <span className="text-xs text-slate-500 font-bold">Rendering Page {pageNum}...</span>
             </div>
           )}
 
           {renderError && (
-            <div className="absolute inset-0 flex items-center justify-center bg-rose-50/20 p-4">
-              <div className="text-rose-500 text-xs font-bold p-3 border border-dashed border-rose-300 rounded-lg bg-rose-50/80">
-                Error rendering page {pageNum}: {renderError}
+            <div className="absolute inset-0 flex items-center justify-center bg-rose-50/30 dark:bg-rose-950/30 p-4 rounded-xl">
+              <div className="text-rose-500 text-xs font-bold p-3 border border-dashed border-rose-400 rounded-xl bg-rose-50/90 dark:bg-slate-900">
+                Failed to render page {pageNum}: {renderError}
               </div>
             </div>
           )}
 
           <canvas
             ref={canvasRef}
-            className="max-w-full h-auto rounded-lg shadow-2xs transition-transform duration-75"
+            className="rounded-lg shadow-sm block transition-opacity duration-200"
           />
         </>
       ) : (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-50 dark:bg-slate-950/40 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-50 dark:bg-slate-950/50 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
           <FileText className="w-8 h-8 text-slate-300 dark:text-slate-700 stroke-[1.2] mb-1 animate-pulse" />
-          <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+          <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-widest">
             Page {pageNum}
           </span>
         </div>
@@ -310,6 +313,11 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
     platform: Capacitor.isNativePlatform() ? Capacitor.getPlatform() : "Web Browser"
   });
 
+  // Storage key for restoring zoom & position memory
+  const memoryKey = useMemo(() => {
+    return `pdf_reader_memory_${storagePath || noteId || url.substring(url.lastIndexOf("/") + 1)}`;
+  }, [storagePath, noteId, url]);
+
   // View state
   const [scale, setScale] = useState<number>(1.2);
   const [rotation, setRotation] = useState<number>(0);
@@ -324,28 +332,61 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
   const [searchResults, setSearchResults] = useState<{ pageNum: number; count: number }[]>([]);
   const [currentMatchIndex, setCurrentMatchIndex] = useState<number>(0);
 
-  // Touch gesture & Panning state
-  const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
-  const touchStartRef = useRef<{
-    distance: number;
-    scale: number;
-    x: number;
-    y: number;
-    center: { x: number; y: number };
-  } | null>(null);
-  const lastTapRef = useRef<number>(0);
-  const mainContainerRef = useRef<HTMLDivElement>(null);
+  // Container references
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
 
-  // Check platform type (Capacitor Native vs Web)
+  // Gesture handling state refs
+  const pinchStateRef = useRef<{
+    isPinching: boolean;
+    startDist: number;
+    startScale: number;
+    focalPoint: { x: number; y: number };
+  }>({
+    isPinching: false,
+    startDist: 0,
+    startScale: 1.2,
+    focalPoint: { x: 0, y: 0 }
+  });
+
+  const lastTapRef = useRef<{ time: number; x: number; y: number }>({ time: 0, x: 0, y: 0 });
+
+  // Check platform type
   const isCapacitorNative = Capacitor.isNativePlatform();
 
-  // Handle Page in view observer callback
+  // Handle Page in view callback
   const handlePageInView = useCallback((pageNum: number) => {
     setCurrentPage(pageNum);
     setPageInput(String(pageNum));
-  }, []);
 
-  // Jump to specific page
+    // Save page position memory
+    try {
+      const stored = sessionStorage.getItem(memoryKey);
+      const parsed = stored ? JSON.parse(stored) : {};
+      sessionStorage.setItem(
+        memoryKey,
+        JSON.stringify({ ...parsed, page: pageNum })
+      );
+    } catch {
+      // ignore
+    }
+  }, [memoryKey]);
+
+  // Save current scale memory
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem(memoryKey);
+      const parsed = stored ? JSON.parse(stored) : {};
+      sessionStorage.setItem(
+        memoryKey,
+        JSON.stringify({ ...parsed, scale })
+      );
+    } catch {
+      // ignore
+    }
+  }, [scale, memoryKey]);
+
+  // Scroll smoothly to target page
   const scrollToPage = useCallback((pageNum: number) => {
     if (pageNum < 1 || !pdf || pageNum > pdf.numPages) return;
     const el = document.getElementById(`pdf-page-${pageNum}`);
@@ -356,80 +397,195 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
     }
   }, [pdf]);
 
-  // Double tap zoom handler
-  const handleDoubleTap = (e: React.TouchEvent<HTMLDivElement>) => {
-    const now = Date.now();
-    if (now - lastTapRef.current < 300) {
-      // Toggle between default scale and 1.8x
-      if (scale > 1.3) {
-        setScale(1.2);
-        setTransform({ scale: 1, x: 0, y: 0 });
-      } else {
-        setScale(1.8);
-        setTransform({ scale: 1, x: 0, y: 0 });
+  // Auto-fit to screen width
+  const handleFitToWidth = useCallback(() => {
+    if (!scrollContainerRef.current) return;
+    const containerWidth = scrollContainerRef.current.clientWidth - 32;
+    // Standard A4 page width ~ 595px
+    const fitScale = Math.min(Math.max(0.6, containerWidth / 595), 2.5);
+    setScale(parseFloat(fitScale.toFixed(2)));
+  }, []);
+
+  // Fit page to viewport height
+  const handleFitPage = useCallback(() => {
+    if (!scrollContainerRef.current) return;
+    const containerHeight = scrollContainerRef.current.clientHeight - 64;
+    // Standard A4 page height ~ 842px
+    const fitScale = Math.min(Math.max(0.5, containerHeight / 842), 2.0);
+    setScale(parseFloat(fitScale.toFixed(2)));
+  }, []);
+
+  // Restore zoom level and page position on initial load
+  useEffect(() => {
+    if (pdf && !loading) {
+      try {
+        const stored = sessionStorage.getItem(memoryKey);
+        if (stored) {
+          const { page, scale: savedScale } = JSON.parse(stored);
+          if (savedScale && savedScale >= 0.5 && savedScale <= 4.0) {
+            setScale(savedScale);
+          } else {
+            handleFitToWidth();
+          }
+          if (page && page >= 1 && page <= pdf.numPages) {
+            setTimeout(() => scrollToPage(page), 150);
+          }
+        } else {
+          handleFitToWidth();
+        }
+      } catch {
+        handleFitToWidth();
       }
     }
-    lastTapRef.current = now;
-  };
+  }, [pdf, loading, memoryKey, handleFitToWidth, scrollToPage]);
 
-  // Touch Start for Pinch-to-zoom and Pan
-  const onTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
-    handleDoubleTap(e);
+  // High-performance Native Touch Gesture Engine (Pinch Zoom & Double-Tap)
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    const stage = stageRef.current;
+    if (!container || !stage) return;
 
-    if (e.touches.length === 2) {
-      const t1 = e.touches[0];
-      const t2 = e.touches[1];
-      const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-      touchStartRef.current = {
-        distance: dist,
-        scale: scale,
-        x: transform.x,
-        y: transform.y,
-        center: { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 }
-      };
-    } else if (e.touches.length === 1) {
-      const t = e.touches[0];
-      touchStartRef.current = {
-        distance: 0,
-        scale: scale,
-        x: transform.x,
-        y: transform.y,
-        center: { x: t.clientX, y: t.clientY }
-      };
-    }
-  };
+    let initialDist = 0;
+    let initialScale = scale;
+    let touchStartPinch = false;
 
-  // Touch Move for Pinch-to-zoom and Pan
-  const onTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (!touchStartRef.current) return;
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        e.preventDefault(); // Prevent browser zoom & scroll wobble
+        touchStartPinch = true;
 
-    if (e.touches.length === 2 && touchStartRef.current.distance > 0) {
-      const t1 = e.touches[0];
-      const t2 = e.touches[1];
-      const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-      const factor = dist / touchStartRef.current.distance;
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        initialDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+        initialScale = scale;
 
-      const targetScale = touchStartRef.current.scale * factor;
-      if (targetScale >= 0.7 && targetScale <= 3.0) {
-        setScale(Math.min(Math.max(0.8, targetScale), 2.5));
+        const rect = container.getBoundingClientRect();
+        const focalX = (t1.clientX + t2.clientX) / 2 - rect.left;
+        const focalY = (t1.clientY + t2.clientY) / 2 - rect.top;
+
+        pinchStateRef.current = {
+          isPinching: true,
+          startDist: initialDist,
+          startScale: initialScale,
+          focalPoint: { x: focalX, y: focalY }
+        };
+      } else if (e.touches.length === 1) {
+        touchStartPinch = false;
+        // Double-tap detection
+        const now = Date.now();
+        const t = e.touches[0];
+        const last = lastTapRef.current;
+        const dist = Math.hypot(t.clientX - last.x, t.clientY - last.y);
+
+        if (now - last.time < 300 && dist < 30) {
+          e.preventDefault(); // Prevent double tap zoom artifacts
+          // Toggle zoom level smoothly
+          if (scale > 1.4) {
+            handleFitToWidth();
+          } else {
+            setScale(2.0);
+          }
+          lastTapRef.current = { time: 0, x: 0, y: 0 };
+          return;
+        }
+        lastTapRef.current = { time: now, x: t.clientX, y: t.clientY };
       }
-    } else if (e.touches.length === 1 && touchStartRef.current.distance === 0 && scale > 1.3) {
-      // Allow panning when zoomed in
-      const t = e.touches[0];
-      const dx = t.clientX - touchStartRef.current.center.x;
-      const dy = t.clientY - touchStartRef.current.center.y;
+    };
 
-      setTransform((prev) => ({
-        ...prev,
-        x: touchStartRef.current!.x + dx,
-        y: touchStartRef.current!.y + dy
-      }));
-    }
-  };
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && touchStartPinch) {
+        e.preventDefault(); // Stop wobble during pinch
 
-  const onTouchEnd = () => {
-    touchStartRef.current = null;
-  };
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        const currentDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+
+        if (initialDist > 0) {
+          const factor = currentDist / initialDist;
+          const previewScale = Math.min(Math.max(0.5, initialScale * factor), 3.5);
+
+          // Fast 60fps hardware accelerated visual preview without re-rendering canvases
+          const ratio = previewScale / initialScale;
+          stage.style.transform = `scale(${ratio})`;
+          stage.style.transformOrigin = `${pinchStateRef.current.focalPoint.x}px ${pinchStateRef.current.focalPoint.y}px`;
+        }
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (touchStartPinch) {
+        touchStartPinch = false;
+        stage.style.transform = "none";
+
+        if (e.touches.length < 2 && pinchStateRef.current.isPinching) {
+          pinchStateRef.current.isPinching = false;
+
+          // Apply clean scale update on pinch release
+          const lastScaleRatio = parseFloat(
+            (stage.style.transform ? parseFloat(stage.style.transform.replace("scale(", "").replace(")", "")) : 1).toFixed(2)
+          );
+
+          if (lastScaleRatio && !isNaN(lastScaleRatio) && lastScaleRatio !== 1) {
+            setScale((prev) => {
+              const target = Math.min(Math.max(0.6, prev * lastScaleRatio), 3.5);
+              return parseFloat(target.toFixed(2));
+            });
+          }
+        }
+      }
+    };
+
+    // Native Wheel / Ctrl + Wheel zoom support for Trackpads & Desktops
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault(); // Prevent full page browser scaling
+        const delta = e.deltaY < 0 ? 0.1 : -0.1;
+        setScale((prev) => {
+          const next = Math.min(Math.max(0.6, prev + delta), 3.5);
+          return parseFloat(next.toFixed(2));
+        });
+      }
+    };
+
+    container.addEventListener("touchstart", onTouchStart, { passive: false });
+    container.addEventListener("touchmove", onTouchMove, { passive: false });
+    container.addEventListener("touchend", onTouchEnd, { passive: true });
+    container.addEventListener("wheel", onWheel, { passive: false });
+
+    return () => {
+      container.removeEventListener("touchstart", onTouchStart);
+      container.removeEventListener("touchmove", onTouchMove);
+      container.removeEventListener("touchend", onTouchEnd);
+      container.removeEventListener("wheel", onWheel);
+    };
+  }, [scale, handleFitToWidth]);
+
+  // Desktop Keyboard Shortcuts (Arrow keys, Zoom shortcuts, Escape)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if (e.key === "Escape") {
+        onClose();
+      } else if (e.key === "ArrowLeft" || e.key === "PageUp") {
+        scrollToPage(currentPage - 1);
+      } else if (e.key === "ArrowRight" || e.key === "PageDown") {
+        scrollToPage(currentPage + 1);
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        setScale((s) => Math.min(5.0, parseFloat((s + 0.25).toFixed(2))));
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "-") {
+        e.preventDefault();
+        setScale((s) => Math.max(0.5, parseFloat((s - 0.25).toFixed(2))));
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "0") {
+        e.preventDefault();
+        setScale(1.0);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [currentPage, scrollToPage, onClose]);
 
   // Resolve download URL and fetch document bytes
   useEffect(() => {
@@ -521,13 +677,9 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
               pdfBlob = sdkData;
             } else {
               console.warn(`[PDF LOAD DIAGNOSTICS] download() returned error or empty blob. Attempting createSignedUrl fallback...`);
-              // Try createSignedUrl(activePath, 3600)
               const { data: signedData, error: signedErr } = await supabase.storage
                 .from(activeBucket)
                 .createSignedUrl(activePath, 3600);
-
-              console.log("signedUrl error:", signedErr);
-              console.log("signedUrl data:", signedData);
 
               if (!signedErr && signedData?.signedUrl) {
                 setResolvedUrl(signedData.signedUrl);
@@ -538,8 +690,6 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
                     console.log(`[PDF LOAD DIAGNOSTICS] Signed URL download succeeded (${blobFromSigned.size} bytes).`);
                     pdfBlob = blobFromSigned;
                   }
-                } else {
-                  console.warn(`[PDF LOAD DIAGNOSTICS] Signed URL fetch returned status ${signedRes.status}`);
                 }
               }
             }
@@ -561,7 +711,6 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
               pdfBlob = await dataUrlToBlob(dlUrl);
               const blobObjUrl = URL.createObjectURL(pdfBlob);
               setResolvedUrl(blobObjUrl);
-              console.log(`[PDF LOAD DIAGNOSTICS] Successfully decoded inline base64 PDF (${pdfBlob.size} bytes).`);
             } catch (e: any) {
               throw new Error(`Failed to read inline PDF document: ${e.message}`);
             }
@@ -581,7 +730,6 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
                 blobXhr.onerror = () => reject(new Error("Failed to read blob URL"));
                 blobXhr.send();
               });
-              console.log(`[PDF LOAD DIAGNOSTICS] Successfully fetched blob URL (${pdfBlob.size} bytes).`);
             } catch (e: any) {
               try {
                 const res = await fetch(dlUrl);
@@ -608,12 +756,6 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
                 xhr.onload = () => {
                   const status = xhr?.status || 0;
                   const contentType = xhr?.getResponseHeader("content-type") || "unknown";
-                  const headers = xhr?.getAllResponseHeaders() || "";
-
-                  console.log(`[PDF LOAD DIAGNOSTICS] HTTP Status: ${status}`);
-                  console.log(`[PDF LOAD DIAGNOSTICS] Content-Type: ${contentType}`);
-                  console.log(`[PDF LOAD DIAGNOSTICS] Response Headers:\n${headers}`);
-                  console.log(`[PDF LOAD DIAGNOSTICS] Response Size: ${xhr?.response?.size ?? "unknown"}`);
 
                   if (contentType && !contentType.toLowerCase().includes("application/pdf") && !contentType.toLowerCase().includes("octet-stream")) {
                     reject(new Error(`Unexpected Content-Type: ${contentType}`));
@@ -632,7 +774,6 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
                 };
 
                 xhr.onerror = () => {
-                  console.error(`[PDF LOAD DIAGNOSTICS] Network connection error fetching ${dlUrl}`);
                   reject(new Error("Network connection error. Failed to download file."));
                 };
 
@@ -643,12 +784,8 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
                 xhr.send();
               });
             } catch (xhrErr: any) {
-              console.warn(`[PdfViewer] XHR download failed (${xhrErr.message}). Attempting fetch API fallback...`);
               try {
                 const fetchRes = await fetch(dlUrl);
-                const fetchContentType = fetchRes.headers.get("content-type") || "unknown";
-                console.log(`[PDF LOAD DIAGNOSTICS] Fallback fetch status: ${fetchRes.status}`);
-                console.log(`[PDF LOAD DIAGNOSTICS] Fallback fetch content-type: ${fetchContentType}`);
                 if (!fetchRes.ok) {
                   throw new Error(`Server returned HTTP status ${fetchRes.status}`);
                 }
@@ -662,15 +799,8 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
 
         if (!active) return;
 
-        // 5. Strict Validation
-        if (!pdfBlob) {
-          throw new Error("File not found in storage (404 Not Found).");
-        }
-        if (!(pdfBlob instanceof Blob)) {
-          throw new Error("Invalid PDF response format.");
-        }
-        if (pdfBlob.size <= 0) {
-          throw new Error("Downloaded PDF is empty (0 bytes).");
+        if (!pdfBlob || pdfBlob.size <= 0) {
+          throw new Error("File not found in storage or received 0 bytes.");
         }
 
         // Verify PDF magic header bytes (%PDF)
@@ -692,13 +822,11 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
               }
             }
             setDiagnostics((d) => ({ ...d, magicBytes: magicText.substring(0, 10) }));
-            throw new Error(`Invalid PDF document format: header does not match %PDF (received "${magicText.substring(0, 10)}").`);
+            throw new Error(`Invalid PDF document format: header does not match %PDF.`);
           }
         } catch (magicErr: any) {
           if (magicErr.message?.includes("Invalid PDF") || magicErr.message?.includes("Supabase Storage Error")) throw magicErr;
         }
-
-        console.log(`[PDF LOAD DIAGNOSTICS] Blob validated successfully. mimeType=${pdfBlob.type || "application/pdf"}, size=${pdfBlob.size} bytes.`);
 
         setDiagnostics({
           bucket: activeBucket,
@@ -713,7 +841,7 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
           platform: isCapacitorNative ? Capacitor.getPlatform() : "Web Browser"
         });
 
-        // Cache valid blob for offline re-use
+        // Cache valid blob
         if (cacheSupported && dlUrl && !dlUrl.startsWith("data:") && !dlUrl.startsWith("blob:")) {
           try {
             const cache = await caches.open("student-pdf-cache");
@@ -723,16 +851,15 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
                 headers: { "Content-Type": "application/pdf" }
               })
             );
-          } catch (e) {
-            console.warn(`[PdfViewer Cache] Cache save error:`, e);
+          } catch {
+            // ignore
           }
         }
 
-        // Generate Object URL for direct browser view or download
         const blobUrl = URL.createObjectURL(pdfBlob);
         setResolvedUrl(blobUrl);
 
-        // 6. Ensure PDF.js rendering engine is loaded
+        // Load PDF.js engine
         setStatusText("Initializing PDF engine...");
         let pdfjsLib = (window as any).pdfjsLib;
         if (!pdfjsLib) {
@@ -744,7 +871,7 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
         }
 
         if (!pdfjsLib) {
-          throw new Error("PDF rendering engine (pdf.js) failed to load from CDN. Please check network connection.");
+          throw new Error("PDF rendering engine (pdf.js) failed to load from CDN.");
         }
 
         setStatusText("Rendering document pages...");
@@ -755,16 +882,9 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
         if (active) {
           setPdf(pdfDoc);
           setLoading(false);
-          console.log(`[PdfViewer] Successfully rendered PDF (${pdfDoc.numPages} pages).`);
         }
       } catch (err: any) {
-        console.error(`[PdfViewer] Failed to load PDF:`, {
-          bucket: bucket || "academy-connect-files",
-          storagePath: storagePath || url,
-          generatedUrl: resolvedUrl || url,
-          supabaseError: err,
-          stack: err?.stack,
-        });
+        console.error(`[PdfViewer] Failed to load PDF:`, err);
         if (active) {
           const msg = err.message || "";
           setDiagnostics((d) => ({
@@ -803,7 +923,6 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
         const text = textContent.items.map((item: any) => item.str).join(" ").toLowerCase();
 
         if (text.includes(query)) {
-          // Count occurrences
           const occurrences = text.split(query).length - 1;
           matches.push({ pageNum: i, count: occurrences });
         }
@@ -836,30 +955,14 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
     scrollToPage(searchResults[prevIdx].pageNum);
   };
 
-  const handleFitToWidth = () => {
-    if (!mainContainerRef.current) return;
-    const containerWidth = mainContainerRef.current.clientWidth - 32; // subtract padding
-    // Assuming standard A4 width ~595px
-    const fitScale = Math.min(Math.max(0.8, containerWidth / 595), 2.2);
-    setScale(parseFloat(fitScale.toFixed(2)));
-    setTransform({ scale: 1, x: 0, y: 0 });
-  };
-
   const handleRetry = () => {
     setRetryTrigger((prev) => prev + 1);
   };
 
-  // Fit Width helper on initial pdf load
-  useEffect(() => {
-    if (pdf && !loading) {
-      handleFitToWidth();
-    }
-  }, [pdf, loading]);
-
   return (
     <div className="fixed inset-0 z-[100] flex flex-col bg-slate-950 text-white select-none animate-fadeIn overflow-hidden">
-      {/* --- Top Header Navigation & Controls --- */}
-      <div className="flex flex-col border-b border-slate-800 bg-slate-900 shrink-0 shadow-md">
+      {/* --- Top Header Toolbar & Controls --- */}
+      <div className="flex flex-col border-b border-slate-800/80 bg-slate-900 shrink-0 shadow-md">
         <div className="flex items-center justify-between px-3 py-2.5 sm:px-4 sm:py-3 gap-2">
           {/* Back button & Title */}
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -873,7 +976,7 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
             </button>
 
             <div className="flex flex-col min-w-0">
-              <h2 className="text-xs sm:text-sm font-extrabold text-slate-100 truncate">
+              <h2 className="text-xs sm:text-sm font-black text-slate-100 truncate">
                 {title}
               </h2>
               {pdf && (
@@ -921,52 +1024,78 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
                     ? "bg-emerald-600 text-white border-emerald-500"
                     : "hover:bg-slate-800 text-slate-300 hover:text-white border-slate-700/80"
                 }`}
-                title={useNativeViewer ? "Switch to Interactive Reader" : "Switch to Native Device Viewer"}
+                title={useNativeViewer ? "Switch to Reader" : "Switch to Device Engine"}
               >
                 <Smartphone className="w-4 h-4" />
                 <span>{useNativeViewer ? "Reader" : "Native"}</span>
               </button>
             )}
 
-            {/* Zoom In / Out Controls */}
+            {/* Professional Zoom Control Suite */}
             {pdf && !useNativeViewer && (
               <div className="flex items-center bg-slate-800/90 rounded-xl p-0.5 border border-slate-700/80 text-xs font-semibold">
                 <button
-                  onClick={() => setScale((s) => Math.max(0.6, parseFloat((s - 0.2).toFixed(2))))}
+                  onClick={() => setScale((s) => Math.max(0.5, parseFloat((s - 0.25).toFixed(2))))}
                   className="p-1.5 hover:text-white text-slate-300 rounded-lg transition cursor-pointer"
                   title="Zoom Out"
                 >
                   <ZoomOut className="w-3.5 h-3.5" />
                 </button>
-                <span className="px-1.5 text-[11px] font-bold text-slate-200">
-                  {Math.round(scale * 100)}%
-                </span>
+
+                <select
+                  value={scale}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    if (!isNaN(val)) setScale(val);
+                  }}
+                  className="bg-transparent text-[11px] font-black text-slate-200 px-1 py-0.5 focus:outline-hidden cursor-pointer"
+                  title="Zoom Percentage"
+                >
+                  <option value={0.5} className="bg-slate-900 text-white">50%</option>
+                  <option value={0.75} className="bg-slate-900 text-white">75%</option>
+                  <option value={1.0} className="bg-slate-900 text-white">100%</option>
+                  <option value={1.25} className="bg-slate-900 text-white">125%</option>
+                  <option value={1.5} className="bg-slate-900 text-white">150%</option>
+                  <option value={2.0} className="bg-slate-900 text-white">200%</option>
+                  <option value={3.0} className="bg-slate-900 text-white">300%</option>
+                  <option value={4.0} className="bg-slate-900 text-white">400%</option>
+                  <option value={5.0} className="bg-slate-900 text-white">500%</option>
+                </select>
+
                 <button
-                  onClick={() => setScale((s) => Math.min(2.5, parseFloat((s + 0.2).toFixed(2))))}
+                  onClick={() => setScale((s) => Math.min(5.0, parseFloat((s + 0.25).toFixed(2))))}
                   className="p-1.5 hover:text-white text-slate-300 rounded-lg transition cursor-pointer"
                   title="Zoom In"
                 >
                   <ZoomIn className="w-3.5 h-3.5" />
                 </button>
+
+                <div className="h-4 w-[1px] bg-slate-700 my-auto mx-0.5 hidden sm:block"></div>
+
                 <button
                   onClick={handleFitToWidth}
-                  className="p-1.5 hover:text-white text-slate-400 hover:bg-slate-700/60 rounded-lg transition cursor-pointer ml-0.5 hidden lg:block"
-                  title="Fit to Width"
+                  className="p-1.5 hover:text-white text-slate-400 hover:bg-slate-700/60 rounded-lg transition cursor-pointer hidden sm:block"
+                  title="Fit Width"
                 >
                   <Maximize2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             )}
 
-            {/* Debug PDF Modal Toggle */}
-            <button
-              onClick={() => setShowDebugModal((prev) => !prev)}
-              className="p-2 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300 rounded-xl transition-all border border-amber-500/30 cursor-pointer flex items-center gap-1.5 text-xs font-bold"
-              title="Debug PDF Diagnostics"
-            >
-              <Bug className="w-4 h-4 text-amber-400" />
-              <span className="hidden sm:inline">Debug PDF</span>
-            </button>
+            {/* Direct Download Button */}
+            {resolvedUrl && (
+              <a
+                href={resolvedUrl}
+                download={`${title.replace(/\s+/g, "_")}.pdf`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-2 hover:bg-slate-800 text-emerald-400 hover:text-emerald-300 rounded-xl transition-all border border-slate-700/80 cursor-pointer flex items-center gap-1"
+                title="Download PDF"
+              >
+                <Download className="w-4 h-4" />
+                <span className="text-xs font-bold hidden lg:inline">Download</span>
+              </a>
+            )}
 
             {/* Open in New Tab */}
             {resolvedUrl && (
@@ -978,20 +1107,6 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
                 title="Open in New Tab"
               >
                 <ExternalLink className="w-4 h-4 text-slate-300" />
-              </a>
-            )}
-
-            {/* Direct download link */}
-            {resolvedUrl && (
-              <a
-                href={resolvedUrl}
-                download={`${title.replace(/\s+/g, "_")}.pdf`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="p-2 hover:bg-slate-800 text-slate-300 hover:text-white rounded-xl transition-all border border-slate-700/80 cursor-pointer flex items-center gap-1"
-                title="Download PDF"
-              >
-                <Download className="w-4 h-4 text-blue-400" />
               </a>
             )}
           </div>
@@ -1044,9 +1159,9 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
           </div>
         )}
 
-        {/* Page Jump navigation bar */}
+        {/* Page Jump & Navigation bar */}
         {pdf && !useNativeViewer && (
-          <div className="flex items-center justify-between px-3 py-1.5 bg-slate-950/80 border-t border-slate-800/80 text-xs">
+          <div className="flex items-center justify-between px-3 py-1.5 bg-slate-950/90 border-t border-slate-800/80 text-xs">
             <div className="flex items-center gap-1.5">
               <button
                 onClick={() => scrollToPage(currentPage - 1)}
@@ -1067,7 +1182,7 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
                   onChange={(e) => setPageInput(e.target.value)}
                   onBlur={() => scrollToPage(Number(pageInput))}
                   onKeyDown={(e) => e.key === "Enter" && scrollToPage(Number(pageInput))}
-                  className="w-11 px-1.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-center text-xs font-bold text-white focus:outline-hidden focus:border-blue-500"
+                  className="w-12 px-1.5 py-0.5 bg-slate-900 border border-slate-700 rounded-md text-center text-xs font-black text-white focus:outline-hidden focus:border-blue-500"
                 />
                 <span>of {pdf.numPages}</span>
               </div>
@@ -1082,17 +1197,32 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
               </button>
             </div>
 
-            <div className="text-[10px] text-slate-400 font-semibold hidden sm:block">
-              Pinch or double-tap to zoom
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleFitToWidth}
+                className="text-[10px] text-slate-400 hover:text-slate-200 font-bold bg-slate-800 px-2 py-0.5 rounded border border-slate-700 transition cursor-pointer"
+              >
+                Fit Width
+              </button>
+              <button
+                onClick={handleFitPage}
+                className="text-[10px] text-slate-400 hover:text-slate-200 font-bold bg-slate-800 px-2 py-0.5 rounded border border-slate-700 transition cursor-pointer hidden sm:inline"
+              >
+                Fit Page
+              </button>
             </div>
           </div>
         )}
       </div>
 
-      {/* --- Main Viewing Area --- */}
+      {/* --- Main Ultra-Smooth Scroll Stage --- */}
       <div
-        ref={mainContainerRef}
-        className="flex-1 overflow-y-auto p-2 sm:p-4 bg-slate-900 flex flex-col items-center justify-start relative"
+        ref={scrollContainerRef}
+        style={{
+          WebkitOverflowScrolling: "touch",
+          touchAction: "pan-x pan-y"
+        }}
+        className="flex-1 overflow-auto p-3 sm:p-6 bg-slate-950 flex flex-col items-center justify-start relative w-full h-full"
       >
         {/* Loading Indicator */}
         {loading && (
@@ -1112,7 +1242,7 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
                 </div>
               )}
               <p className="text-[11px] text-slate-400 mt-2.5 leading-relaxed">
-                Fetching directly from secure storage. Cached locally for lightning fast offline viewing.
+                Opening PDF document safely with high-performance rendering engine.
               </p>
             </div>
           </div>
@@ -1120,14 +1250,14 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
 
         {/* Error Handling View */}
         {error && (
-          <div className="my-auto flex flex-col items-center justify-center p-6 sm:p-8 text-center max-w-md mx-auto gap-4 bg-slate-950/80 rounded-2xl border border-rose-500/20 shadow-xl">
+          <div className="my-auto flex flex-col items-center justify-center p-6 sm:p-8 text-center max-w-md mx-auto gap-4 bg-slate-900 rounded-2xl border border-rose-500/20 shadow-xl">
             <div className="bg-rose-500/10 p-3.5 rounded-full border border-rose-500/20 text-rose-400">
               <AlertTriangle className="w-8 h-8" />
             </div>
             <div>
               <h3 className="font-bold text-base text-rose-400">{error}</h3>
               <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-                We encountered an issue opening this chapter note PDF. Please verify your internet connection or use the direct download option above.
+                We encountered an issue opening this chapter note PDF. Please verify your internet connection and try retrying.
               </p>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-3 mt-2">
@@ -1136,32 +1266,13 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
                 className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md cursor-pointer transition-all active:scale-95"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>Retry Download</span>
+                <span>Retry Loading</span>
               </button>
-              <button
-                onClick={() => setShowDebugModal(true)}
-                className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-xl border border-amber-500/30 cursor-pointer transition-all"
-              >
-                <Bug className="w-3.5 h-3.5" />
-                <span>Debug Diagnostics</span>
-              </button>
-              {resolvedUrl && (
-                <a
-                  href={resolvedUrl}
-                  download={`${title.replace(/\s+/g, "_")}.pdf`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-700 cursor-pointer transition-all"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download PDF</span>
-                </a>
-              )}
             </div>
           </div>
         )}
 
-        {/* Native PDF Device Viewer Mode (iFrame/Object) */}
+        {/* Native Device Reader Mode */}
         {!loading && !error && useNativeViewer && resolvedUrl && (
           <div className="w-full h-full flex-1 rounded-xl overflow-hidden bg-white shadow-xl border border-slate-800">
             <iframe
@@ -1172,19 +1283,11 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
           </div>
         )}
 
-        {/* Interactive Web PDF.js Viewer Mode */}
+        {/* Interactive Web PDF.js Reader Engine Stage */}
         {!loading && !error && pdf && !useNativeViewer && (
           <div
-            onTouchStart={onTouchStart}
-            onTouchMove={onTouchMove}
-            onTouchEnd={onTouchEnd}
-            style={{
-              transform: `scale(${transform.scale}) translate(${transform.x}px, ${transform.y}px)`,
-              transformOrigin: "center top",
-              transition: touchStartRef.current ? "none" : "transform 0.15s ease-out",
-              touchAction: scale > 1.3 ? "none" : "pan-y"
-            }}
-            className="w-full max-w-4xl flex flex-col items-center gap-3 my-1"
+            ref={stageRef}
+            className="flex flex-col items-center gap-2 transition-transform duration-75 origin-top"
           >
             {Array.from({ length: pdf.numPages }, (_, i) => {
               const pageNum = i + 1;
@@ -1205,13 +1308,13 @@ export default function PdfViewer({ url, title, onClose, noteId, storagePath, bu
         )}
       </div>
 
-      {/* --- Debug PDF Diagnostics Modal Overlay --- */}
+      {/* --- Diagnostic Info Overlay --- */}
       {showDebugModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn">
           <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-5 sm:p-6 max-w-lg w-full shadow-2xl text-slate-100 relative max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
               <div className="flex items-center gap-2 text-amber-400 font-bold text-base">
-                <Bug className="w-5 h-5 text-amber-400" />
+                <Info className="w-5 h-5 text-amber-400" />
                 <span>PDF Diagnostic Info</span>
               </div>
               <button

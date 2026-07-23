@@ -1817,17 +1817,6 @@ export function StudentMyTab({
 
                             <button
                               type="button"
-                              onClick={() => handleDownloadPdf(note)}
-                              disabled={downloadingNoteId === note.id}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200/70 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-300 text-xs font-bold hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-all cursor-pointer shadow-xs active:scale-95 disabled:opacity-50"
-                              title="Download PDF"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              <span>{downloadingNoteId === note.id ? "Downloading..." : "Download"}</span>
-                            </button>
-
-                            <button
-                              type="button"
                               onClick={() => setProgressModalNote(note)}
                               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-all cursor-pointer active:scale-95"
                               title="Chapter Progress"

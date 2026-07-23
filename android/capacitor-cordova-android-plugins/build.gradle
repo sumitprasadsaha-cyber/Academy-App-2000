@@ -21,8 +21,8 @@ android {
     defaultConfig {
         minSdkVersion project.hasProperty('minSdkVersion') ? rootProject.ext.minSdkVersion : 24
         targetSdkVersion project.hasProperty('targetSdkVersion') ? rootProject.ext.targetSdkVersion : 36
-        versionCode 1
-        versionName "1.0"
+        versionCode 4
+        versionName "3.9.3"
     }
     lintOptions {
         abortOnError = false
