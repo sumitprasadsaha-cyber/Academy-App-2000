@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { APP_VERSION } from "../config";
 import StudentAvatar from "./StudentAvatar";
+import { saveAndOpenGeneratedPdf } from "../lib/nativePdfService";
 import {
   BookOpen,
   CreditCard,
@@ -18,6 +19,7 @@ import {
   AlertCircle,
   Cpu,
   Atom,
+  Loader2,
   FlaskConical,
   Dna,
   Globe,
@@ -95,7 +97,7 @@ function getInitials(name: string) {
     .join("");
 }
 
-export function generateSubjectPdfReport(student: Student, subject: string, notes: ChapterNote[]) {
+export async function generateSubjectPdfReport(student: Student, subject: string, notes: ChapterNote[]) {
   const doc = new jsPDF();
   const currentDate = new Date().toLocaleDateString("en-IN", {
     year: "numeric",
@@ -220,13 +222,18 @@ export function generateSubjectPdfReport(student: Student, subject: string, note
   } else {
     notes.forEach((note) => {
       const progRecord = getChapterProgressRecord(note.id, subject, student.chapterProgress);
-      const statusConfig = getStatusConfig(progRecord?.selectedStatus);
+      const statusConfig = getStatusConfig(progRecord?.selectedStatus) || { label: "Not Started", percent: 0, color: "text-slate-500", bg: "bg-slate-100" };
       const statusText = statusConfig.label;
       const progressPct = progRecord?.calculatedProgress ?? statusConfig.percent;
       const remarksText = progRecord?.remarks || note.remark || "—";
       const updatedStr = progRecord?.updatedAt
         ? new Date(progRecord.updatedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })
         : "—";
+
+      if (y > 265) {
+        doc.addPage();
+        y = 20;
+      }
 
       doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
@@ -277,44 +284,19 @@ export function generateSubjectPdfReport(student: Student, subject: string, note
   doc.text("This report is generated dynamically by the Personal Study Space portal.", 14, 280);
   doc.text("© 2026 Tuition Ledger Academy", 150, 280);
 
-  // Save PDF report with robust sandboxed iframe fallbacks
-  const fileName = `${student.name.replace(/\s+/g, "_")}_${subject.replace(/\s+/g, "_")}_Report.pdf`;
-  let isStandardSaveSuccess = false;
+  // Save PDF report with robust fallback
+  const fileName = `${(student?.name || "Student").replace(/\s+/g, "_")}_${subject.replace(/\s+/g, "_")}_Report.pdf`;
   try {
-    doc.save(fileName);
-    isStandardSaveSuccess = true;
+    const pdfBlob = doc.output("blob");
+    await saveAndOpenGeneratedPdf(pdfBlob, fileName);
   } catch (error) {
-    console.warn("[PDF Generator] Standard doc.save failed, trying Blob download fallback:", error);
+    console.warn("[PDF Generator] Native save failed, using fallback:", error);
     try {
-      const blob = doc.output("blob");
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.target = "_blank";
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      isStandardSaveSuccess = true;
+      doc.save(fileName);
     } catch (e) {
-      console.error("[PDF Generator] Blob fallback failed:", e);
-      // Final fallback: open data uri in new tab or frame
-      try {
-        const string = doc.output("datauristring");
-        const x = window.open();
-        if (x) {
-          x.document.open();
-          x.document.write(`<iframe width='100%' height='100%' style='border:0' src='${string}'></iframe>`);
-          x.document.close();
-          isStandardSaveSuccess = true;
-        } else {
-          window.location.href = string;
-          isStandardSaveSuccess = true;
-        }
-      } catch (err) {
-        console.error("[PDF Generator] All fallback attempts failed:", err);
-      }
+      console.error("[PDF Generator] Fallback failed:", e);
+      const string = doc.output("datauristring");
+      window.open(string, "_blank");
     }
   }
 
@@ -1493,6 +1475,7 @@ export function StudentMyTab({
   } | null>(null);
   const [downloadingNoteId, setDownloadingNoteId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
   const [progressModalNote, setProgressModalNote] = useState<ChapterNote | null>(null);
 
   // Delete note state
@@ -1747,12 +1730,27 @@ export function StudentMyTab({
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <button
-                    onClick={() => generateSubjectPdfReport(student, selectedSubject, selectedNotes)}
-                    className="rounded-xl bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-950/70 px-3 py-1.5 text-xs font-bold text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900/40 flex items-center gap-1.5 cursor-pointer transition active:scale-95"
+                    disabled={isGeneratingPdf}
+                    onClick={async () => {
+                      if (isGeneratingPdf || !selectedSubject) return;
+                      setIsGeneratingPdf(true);
+                      try {
+                        await generateSubjectPdfReport(student, selectedSubject, selectedNotes);
+                      } catch (err) {
+                        console.error("Failed to generate subject PDF report:", err);
+                      } finally {
+                        setIsGeneratingPdf(false);
+                      }
+                    }}
+                    className="rounded-xl bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-950/70 disabled:opacity-50 px-3 py-1.5 text-xs font-bold text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900/40 flex items-center gap-1.5 cursor-pointer transition active:scale-95 shrink-0"
                     title="Generate Subject PDF Report"
                   >
-                    <FileText className="w-3.5 h-3.5" />
-                    <span className="hidden min-[400px]:inline">Report</span>
+                    {isGeneratingPdf ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <FileText className="w-3.5 h-3.5" />
+                    )}
+                    <span className="hidden min-[400px]:inline">{isGeneratingPdf ? "Generating..." : "Report"}</span>
                   </button>
                   <div className="rounded-xl bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-bold text-slate-600 dark:text-slate-400 border border-slate-100 dark:border-slate-850/60 flex items-center gap-1.5">
                     <BookOpen className="w-3.5 h-3.5 text-blue-500" />

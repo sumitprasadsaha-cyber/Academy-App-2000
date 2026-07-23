@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import StudentAvatar from "./StudentAvatar";
 import { getInstitutionName, saveStudentDoc } from "../lib/firestoreService";
 import { uploadReportToStorage } from "../lib/storageService";
+import { saveAndOpenGeneratedPdf } from "../lib/nativePdfService";
 import { 
   ArrowLeft, 
   Phone, 
@@ -499,7 +500,7 @@ export default function StudentDetails({
     window.open(link, "_blank");
   };
 
-  const handleGeneratePdfReport = () => {
+  const handleGeneratePdfReport = async () => {
     const doc = new jsPDF();
     const dateStr = new Date().toLocaleDateString("en-US", { day: "numeric", month: "long", year: "numeric" });
     
@@ -651,44 +652,19 @@ export default function StudentDetails({
     doc.text(`${institutionName} - Shaping Bright Minds`, 12, 282);
     doc.text("This progress card is digitally authorized by the Administrator.", 115, 282);
     
-    // Save report with robust sandboxed iframe fallbacks
+    // Save report with robust native & browser fallback
     const fileName = `${student.name.replace(/\s+/g, "_")}_Progress_Report.pdf`;
-    let isStandardSaveSuccess = false;
     try {
-      doc.save(fileName);
-      isStandardSaveSuccess = true;
+      const pdfBlob = doc.output("blob");
+      await saveAndOpenGeneratedPdf(pdfBlob, fileName);
     } catch (error) {
-      console.warn("[PDF Generator] Standard doc.save failed, trying Blob download fallback:", error);
+      console.warn("[PDF Generator] Native save failed, using fallback:", error);
       try {
-        const blob = doc.output("blob");
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.target = "_blank";
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        isStandardSaveSuccess = true;
+        doc.save(fileName);
       } catch (e) {
-        console.error("[PDF Generator] Blob fallback failed:", e);
-        // Final fallback: open data uri in new tab or frame
-        try {
-          const string = doc.output("datauristring");
-          const x = window.open();
-          if (x) {
-            x.document.open();
-            x.document.write(`<iframe width='100%' height='100%' style='border:0' src='${string}'></iframe>`);
-            x.document.close();
-            isStandardSaveSuccess = true;
-          } else {
-            window.location.href = string;
-            isStandardSaveSuccess = true;
-          }
-        } catch (err) {
-          console.error("[PDF Generator] All fallback attempts failed:", err);
-        }
+        console.error("[PDF Generator] Fallback failed:", e);
+        const string = doc.output("datauristring");
+        window.open(string, "_blank");
       }
     }
 

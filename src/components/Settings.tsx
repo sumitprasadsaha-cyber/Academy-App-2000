@@ -16,7 +16,8 @@ import {
   X,
   Building2,
   Share2,
-  Palette
+  Palette,
+  Loader2
 } from "lucide-react";
 import { APP_VERSION } from "../config";
 import { signInWithGoogleDrive, backupToGoogleDrive, restoreFromGoogleDrive } from "../lib/googleDrive";
@@ -65,6 +66,7 @@ export default function Settings({
   const [successMsg, setSuccessMsg] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [selectedReportYear, setSelectedReportYear] = useState(2026);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [settingsInstName, setSettingsInstName] = useState("Ingenious Study Circle");
 
   // Load Institution Name on mount
@@ -714,18 +716,27 @@ export default function Settings({
                   </select>
                 </div>
                 <button
-                  onClick={() => {
+                  disabled={isGeneratingReport}
+                  onClick={async () => {
+                    if (isGeneratingReport) return;
+                    setIsGeneratingReport(true);
                     try {
-                      generateAnnualReport(selectedReportYear, students);
+                      await generateAnnualReport(selectedReportYear, students);
                       triggerNotification("PDF Financial Report generated and downloaded successfully!");
                     } catch (e: any) {
                       triggerNotification(`Failed to generate report: ${e.message || e}`, true);
+                    } finally {
+                      setIsGeneratingReport(false);
                     }
                   }}
-                  className="py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-blue-500/10 transition-all shrink-0"
+                  className="py-2.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-blue-500/10 transition-all shrink-0"
                 >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Download PDF Report</span>
+                  {isGeneratingReport ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isGeneratingReport ? "Generating..." : "Download PDF Report"}</span>
                 </button>
               </div>
             </div>

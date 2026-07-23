@@ -79,25 +79,41 @@ export default function StudentAvatar({
   );
 
   useEffect(() => {
+    let isMounted = true;
     if (imageUrl) {
       setImageState("loading");
+
       const img = new Image();
+      img.onload = () => {
+        if (isMounted) setImageState("loaded");
+      };
+      img.onerror = () => {
+        if (isMounted) setImageState("error");
+      };
       img.src = imageUrl;
-      img.onload = () => setImageState("loaded");
-      img.onerror = () => setImageState("error");
+
+      // Handle cached images that are already completely loaded
+      if (img.complete && img.naturalWidth > 0) {
+        if (isMounted) setImageState("loaded");
+      }
     } else {
       setImageState("error");
     }
+
+    return () => {
+      isMounted = false;
+    };
   }, [imageUrl]);
 
-  const showImage = Boolean(imageUrl && imageState === "loaded");
+  const hasImage = Boolean(imageUrl && imageState !== "error");
+  const isLoaded = Boolean(imageUrl && imageState === "loaded");
   const isLoading = Boolean(imageUrl && imageState === "loading");
 
   return (
     <div
       id={id}
       className={`relative overflow-hidden flex items-center justify-center shrink-0 ${
-        showImage ? "bg-slate-100 dark:bg-slate-800" : bgColor
+        hasImage ? "bg-slate-100 dark:bg-slate-800" : bgColor
       } ${className}`}
     >
       {/* Loading Skeleton Placeholder */}
@@ -110,11 +126,13 @@ export default function StudentAvatar({
       )}
 
       {/* Main Profile Image or Fallback Initials */}
-      {showImage ? (
+      {hasImage ? (
         <img
           src={imageUrl}
           alt={alt || name}
-          className={`w-full h-full object-cover ${imgClassName}`}
+          className={`w-full h-full object-cover transition-opacity duration-200 ${
+            isLoaded ? "opacity-100" : "opacity-0"
+          } ${imgClassName}`}
           referrerPolicy="no-referrer"
           onLoad={() => setImageState("loaded")}
           onError={() => setImageState("error")}

@@ -282,3 +282,38 @@ export async function openPdfWithNativeViewer(options: OpenPdfOptions): Promise<
     return { success: true, isNative: false };
   }
 }
+
+/**
+ * Saves and opens a client-side generated PDF blob on native Android or web.
+ */
+export async function saveAndOpenGeneratedPdf(pdfBlob: Blob, fileName: string): Promise<void> {
+  const isNative = typeof Capacitor !== "undefined" && Capacitor.isNativePlatform();
+  if (isNative) {
+    const base64Data = await blobToBase64(pdfBlob);
+    await Filesystem.writeFile({
+      path: fileName,
+      data: base64Data,
+      directory: Directory.Cache,
+      recursive: true
+    });
+    const uriResult = await Filesystem.getUri({
+      path: fileName,
+      directory: Directory.Cache
+    });
+    await FileOpener.open({
+      filePath: uriResult.uri,
+      contentType: "application/pdf",
+      openWithDefault: false
+    });
+  } else {
+    const url = URL.createObjectURL(pdfBlob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+}

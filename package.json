@@ -1,7 +1,7 @@
 {
   "name": "tuition-ledger-management",
   "private": true,
-  "version": "3.9.5",
+  "version": "3.9.7",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

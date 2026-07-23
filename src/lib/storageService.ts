@@ -247,7 +247,9 @@ export async function uploadFileToSupabase(
 ): Promise<SupabaseUploadMetadata> {
   const bucket = getBucketName(bucketInput);
   const sanitizedPath = normalizeUploadedStoragePath(bucket, rawPath);
-  const mimeType = file.type || PDF_MIME_TYPE;
+  const isPdf = fileName.toLowerCase().endsWith(".pdf");
+  const isImage = fileName.toLowerCase().match(/\.(png|jpg|jpeg|webp|gif|svg)$/i) || (!isPdf && (file.type || "").startsWith("image"));
+  const mimeType = file.type || (isPdf ? PDF_MIME_TYPE : isImage ? "image/jpeg" : "application/octet-stream");
 
   console.log(`[StorageService] Uploading file to Supabase Storage:`);
   console.log(`  - Bucket Name: "${bucket}"`);
@@ -268,7 +270,7 @@ export async function uploadFileToSupabase(
     .from(bucket)
     .upload(sanitizedPath, file, {
       contentType: mimeType,
-      upsert: false
+      upsert: true
     });
 
   console.log("[StorageService] Supabase upload response object:", { data, error });
@@ -290,11 +292,15 @@ export async function uploadFileToSupabase(
 
   let downloadUrl = "";
   try {
-    downloadUrl = await getResolvedViewUrl(bucket, successPath);
-  } catch (urlError) {
-    console.warn("[StorageService] Failed to generate signed URL post-upload, using publicUrl fallback:", urlError);
     const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(successPath);
-    downloadUrl = publicData?.publicUrl || "";
+    if (publicData?.publicUrl) {
+      downloadUrl = publicData.publicUrl;
+    } else {
+      downloadUrl = await getResolvedViewUrl(bucket, successPath);
+    }
+  } catch (urlError) {
+    console.warn("[StorageService] Failed to generate public URL post-upload, using fallback:", urlError);
+    downloadUrl = await getResolvedViewUrl(bucket, successPath);
   }
 
   const metadata: SupabaseUploadMetadata = {

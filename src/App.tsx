@@ -12,7 +12,6 @@ import StudyTimerModal from "./components/StudyTimerModal";
 import Settings from "./components/Settings";
 import Login from "./components/Login";
 import StudentDashboard, { StudentMyTab } from "./components/StudentDashboard";
-import AIInsights from "./components/AIInsights";
 import { getMonthsUpToCurrent } from "./utils/monthHelper";
 import { getFirebaseAuth, createNewUserAuth } from "./lib/firebase";
 import { 
@@ -42,7 +41,14 @@ function normalizeStudent(student: Partial<Student> | null | undefined): Student
     feeMonthsList: student?.feeMonthsList || [],
     feePaymentDates: student?.feePaymentDates || {},
     enrolledSubjects: student?.enrolledSubjects || [],
-    avatarUrl: student?.avatarUrl || "",
+    avatarUrl:
+      student?.avatarUrl ||
+      (student as any)?.photoUrl ||
+      (student as any)?.photoURL ||
+      (student as any)?.profilePic ||
+      (student as any)?.imageUrl ||
+      (student as any)?.avatar ||
+      "",
     avatarColor: student?.avatarColor || "",
     avatarStorageProvider: student?.avatarStorageProvider || undefined,
     avatarBucket: student?.avatarBucket || "",
@@ -194,7 +200,7 @@ export default function App() {
   };
 
   // --- Navigation States ---
-  const [activeTab, setActiveTab] = useState<"Dashboard" | "Students" | "AIInsights" | "My" | "Settings">("Dashboard");
+  const [activeTab, setActiveTab] = useState<"Dashboard" | "Students" | "My" | "Settings">("Dashboard");
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(() => {
     // If a student session was preserved, preset selected student ID
     const cachedAuth = localStorage.getItem("tuition_auth_state");
@@ -849,8 +855,11 @@ export default function App() {
 
     try {
       if (studentToUpdate.avatarStoragePath) {
-        // Delete old avatar from storage to avoid orphan files
-        await deleteFileFromStorage(studentToUpdate.avatarStoragePath);
+        try {
+          await deleteFileFromStorage(studentToUpdate.avatarStoragePath);
+        } catch {
+          // ignore cleanup errors if old file doesn't exist
+        }
       }
 
       // Upload base64 image as file to Storage
@@ -858,7 +867,7 @@ export default function App() {
 
       updatedStudent = {
         ...studentToUpdate,
-        avatarUrl: metadata.downloadUrl,
+        avatarUrl: metadata.downloadUrl || dataUrl,
         avatarStorageProvider: "supabase",
         avatarBucket: metadata.bucket,
         avatarStoragePath: metadata.storagePath,
@@ -875,6 +884,30 @@ export default function App() {
     await saveStudentDoc(updatedStudent);
 
     // 2. Update local state
+    setStudents((prev) =>
+      prev.map((s) => (s.id === studentId ? updatedStudent : s))
+    );
+  };
+
+  // Remove profile photo
+  const handleRemoveProfilePhoto = async (studentId: string) => {
+    const studentToUpdate = students.find((s) => s.id === studentId);
+    if (!studentToUpdate) return;
+
+    if (studentToUpdate.avatarStoragePath) {
+      try {
+        await deleteFileFromStorage(studentToUpdate.avatarStoragePath);
+      } catch {}
+    }
+
+    const updatedStudent: Student = {
+      ...studentToUpdate,
+      avatarUrl: "",
+      avatarStoragePath: "",
+      avatarBucket: "",
+    };
+
+    await saveStudentDoc(updatedStudent);
     setStudents((prev) =>
       prev.map((s) => (s.id === studentId ? updatedStudent : s))
     );
@@ -1008,10 +1041,6 @@ export default function App() {
               onDeleteStudent={handleDeleteStudent}
               onAddStudent={handleTriggerAdd}
             />
-          )}
-
-          {activeTab === "AIInsights" && (
-            <AIInsights students={students} />
           )}
 
           {activeTab === "Settings" && (
@@ -1223,28 +1252,6 @@ export default function App() {
               </button>
             )}
 
-            {/* Nav Tab 4: AI Insights (Admin only) */}
-            {auth.role === "admin" && (
-              <button
-                onClick={() => {
-                  setActiveTab("AIInsights");
-                  setSelectedStudentId(null);
-                  setActiveSubject(null);
-                }}
-                className={`flex flex-col items-center gap-0.5 sm:gap-1 transition-all flex-1 py-1 cursor-pointer ${
-                  activeTab === "AIInsights"
-                    ? "text-blue-600 dark:text-blue-400 scale-102 font-bold"
-                    : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-                }`}
-                id="nav-btn-ai-insights"
-              >
-                <Sparkles className="w-5 h-5 stroke-[2]" />
-                <span className="text-[9px] sm:text-[10px] font-bold tracking-wider uppercase mt-0.5">
-                  AI Insights
-                </span>
-              </button>
-            )}
-
             {/* Nav Tab 3: Settings */}
             <button
               onClick={() => {
@@ -1285,6 +1292,8 @@ export default function App() {
             isOpen={isAvatarOpen}
             onClose={() => setIsAvatarOpen(false)}
             onSelectPhoto={(dataUrl) => handleSaveProfilePhoto(activeStudent.id, dataUrl)}
+            existingPhoto={activeStudent.avatarUrl}
+            onRemovePhoto={() => handleRemoveProfilePhoto(activeStudent.id)}
           />
         )}
 

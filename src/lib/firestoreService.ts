@@ -396,23 +396,23 @@ export function subscribeToStudent(
  */
 export async function saveStudentDoc(student: Student): Promise<void> {
   const cleanedStudent = cleanObjectForFirestore(student);
-  const db = await getFirebaseDb();
-  if (!db) {
-    // Local storage fallback
-    const students = getLocalStudents();
-    const existsIdx = students.findIndex((s) => s.id === cleanedStudent.id);
-    if (existsIdx > -1) {
-      students[existsIdx] = cleanedStudent;
-    } else {
-      students.unshift(cleanedStudent);
-    }
-    saveLocalStudents(students);
-    return;
+
+  // Synchronously update local storage cache and notify local subscribers
+  const students = getLocalStudents();
+  const existsIdx = students.findIndex((s) => s.id === cleanedStudent.id);
+  if (existsIdx > -1) {
+    students[existsIdx] = cleanedStudent;
+  } else {
+    students.unshift(cleanedStudent);
   }
+  saveLocalStudents(students);
+
+  const db = await getFirebaseDb();
+  if (!db) return;
 
   try {
     const studentDocRef = doc(db, "students", cleanedStudent.id);
-    await setDoc(studentDocRef, cleanedStudent);
+    await setDoc(studentDocRef, cleanedStudent, { merge: true });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `students/${cleanedStudent.id}`);
   }

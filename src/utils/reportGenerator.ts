@@ -1,6 +1,7 @@
 import { jsPDF } from "jspdf";
 import { Student } from "../types";
 import { isFutureMonth, hasAttendedInMonth } from "../components/StudentList";
+import { saveAndOpenGeneratedPdf } from "../lib/nativePdfService";
 
 // Generate a list of the 13 months for a March-to-March session
 export function getSessionMonths(startYear: number): string[] {
@@ -72,7 +73,7 @@ interface MonthDetailSummary {
 }
 
 // Generate the Comprehensive Annual PDF Report (Summary + Full Month-by-Month Reports)
-export function generateAnnualReport(startYear: number, students: Student[]) {
+export async function generateAnnualReport(startYear: number, students: Student[]) {
   const doc = new jsPDF({
     orientation: "portrait",
     unit: "mm",
@@ -127,16 +128,21 @@ export function generateAnnualReport(startYear: number, students: Student[]) {
       // Check if student was enrolled during this month
       const isBeforeRegistration = year < regYear || (year === regYear && mIdx < regMonthIdx);
       if (!isBeforeRegistration) {
-        monthTarget += student.monthlyFee;
+        const studentFee = Number(student?.monthlyFee) || 0;
+        const studentName = student?.name || "Student";
+        const classGrade = student?.classGrade || "N/A";
+        const phone = student?.phone || "N/A";
+
+        monthTarget += studentFee;
         const feeMonths = student.feeMonths || {};
         const status = feeMonths[monthStr];
 
         if (status === "paid") {
-          monthCollected += student.monthlyFee;
-          paidList.push({ name: student.name, classGrade: student.classGrade, fee: student.monthlyFee });
+          monthCollected += studentFee;
+          paidList.push({ name: studentName, classGrade, fee: studentFee });
         } else if (!isFutureMonth(monthStr) && hasAttendedInMonth(student, monthStr) && (status === "unpaid" || (!status && monthStr !== "na"))) {
-          monthDues += student.monthlyFee;
-          unpaidList.push({ name: student.name, classGrade: student.classGrade, fee: student.monthlyFee, phone: student.phone || "N/A" });
+          monthDues += studentFee;
+          unpaidList.push({ name: studentName, classGrade, fee: studentFee, phone });
         }
       }
     });
@@ -472,7 +478,7 @@ export function generateAnnualReport(startYear: number, students: Student[]) {
 
         doc.setFont("helvetica", "bold");
         doc.setTextColor(redColor[0], redColor[1], redColor[2]);
-        doc.text(`INR ${st.fee.toLocaleString("en-IN")}`, 160, y + 4.2);
+        doc.text(`INR ${(st.fee || 0).toLocaleString("en-IN")}`, 160, y + 4.2);
 
         y += 6;
       });
@@ -482,22 +488,14 @@ export function generateAnnualReport(startYear: number, students: Student[]) {
   // Download PDF file with robust fallback
   const fileName = `Annual_Financial_Audit_${startYear}_${startYear + 1}.pdf`;
   try {
-    doc.save(fileName);
+    const pdfBlob = doc.output("blob");
+    await saveAndOpenGeneratedPdf(pdfBlob, fileName);
   } catch (error) {
-    console.warn("[PDF Generator] Standard save failed, using blob fallback:", error);
+    console.warn("[PDF Generator] Native save failed, using fallback:", error);
     try {
-      const blob = doc.output("blob");
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.target = "_blank";
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      doc.save(fileName);
     } catch (e) {
-      console.error("[PDF Generator] Blob fallback failed:", e);
+      console.error("[PDF Generator] Fallback failed:", e);
       const string = doc.output("datauristring");
       window.open(string, "_blank");
     }
