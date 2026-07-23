@@ -1,0 +1,80 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // STANDALONE HELPERS
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             getUserData().role == "Admin";
+    }
+
+    function isStudent(studentId) {
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             getUserData().role == "Student" && 
+             getUserData().studentId == studentId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // ENTITY VALIDATIONS
+
+    function isValidUser(data) {
+      return data.uid is string && data.uid.size() <= 128 &&
+             data.phone is string && data.phone.size() <= 20 &&
+             data.role in ["Admin", "Student"] &&
+             data.status in ["Active", "Inactive"] &&
+             (data.role == "Admin" || (data.studentId is string && data.studentId.size() <= 128));
+    }
+
+    function isValidStudent(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.name is string && data.name.size() <= 128 &&
+             data.classGrade is string && data.classGrade.size() <= 32 &&
+             data.phone is string && data.phone.size() <= 20 &&
+             data.parentPhone is string && data.parentPhone.size() <= 20 &&
+             data.monthlyFee is number && data.monthlyFee >= 0;
+    }
+
+    // MATCH BLOCKS
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if isSignedIn() && 
+                    (request.auth.uid == userId && 
+                     isValidUser(request.resource.data) &&
+                     request.resource.data.uid == request.auth.uid);
+      allow update: if (isAdmin() && isValidUser(request.resource.data)) ||
+                      (isSignedIn() && 
+                       request.auth.uid == userId && 
+                       isValidUser(request.resource.data) &&
+                       request.resource.data.uid == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    match /students/{studentId} {
+      allow read: if isSignedIn() && (isAdmin() || isStudent(studentId));
+      allow create, delete: if isAdmin() && isValidStudent(request.resource.data);
+      allow update: if (isAdmin() && isValidStudent(request.resource.data)) ||
+                      (isStudent(studentId) && 
+                       isValidStudent(request.resource.data) &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['avatarUrl', 'avatarColor']));
+    }
+  }
+}

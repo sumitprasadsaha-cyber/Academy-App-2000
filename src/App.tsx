@@ -1,0 +1,1306 @@
+import React, { useState, useEffect } from "react";
+import { LayoutDashboard, Users, Settings as SettingsIcon, BookOpen, RefreshCw, Sparkles, Timer, Clock } from "lucide-react";
+import { Student, ChapterNote } from "./types";
+import { INITIAL_STUDENTS } from "./data";
+import Dashboard from "./components/Dashboard";
+import StudentList from "./components/StudentList";
+import StudentDetails from "./components/StudentDetails";
+import SubjectNotes from "./components/SubjectNotes";
+import AddEditStudentModal from "./components/AddEditStudentModal";
+import ProfilePictureModal from "./components/ProfilePictureModal";
+import StudyTimerModal from "./components/StudyTimerModal";
+import Settings from "./components/Settings";
+import Login from "./components/Login";
+import StudentDashboard, { StudentMyTab } from "./components/StudentDashboard";
+import AIInsights from "./components/AIInsights";
+import { getMonthsUpToCurrent } from "./utils/monthHelper";
+import { preloadPdfJs } from "./components/PdfViewer";
+import { getFirebaseAuth, createNewUserAuth } from "./lib/firebase";
+import { 
+  getUserDocument, 
+  subscribeToStudents, 
+  subscribeToStudent, 
+  saveStudentDoc, 
+  deleteStudentDoc,
+  saveUserDocument,
+  deleteUserAuthCredentials
+} from "./lib/firestoreService";
+import { deleteFileFromStorage, uploadProfilePhoto } from "./lib/storageService";
+import { supabase } from "./lib/supabaseClient";
+import { APP_VERSION } from "./config";
+
+function normalizeStudent(student: Partial<Student> | null | undefined): Student {
+  return {
+    id: student?.id || "",
+    name: student?.name || "Unnamed Student",
+    classGrade: student?.classGrade || "",
+    phone: student?.phone || "",
+    parentPhone: student?.parentPhone || "",
+    monthlyFee: student?.monthlyFee || 0,
+    feePaidThisMonth: Boolean(student?.feePaidThisMonth),
+    registrationDate: student?.registrationDate || new Date().toISOString(),
+    feeMonths: student?.feeMonths || {},
+    feeMonthsList: student?.feeMonthsList || [],
+    feePaymentDates: student?.feePaymentDates || {},
+    enrolledSubjects: student?.enrolledSubjects || [],
+    avatarUrl: student?.avatarUrl || "",
+    avatarColor: student?.avatarColor || "",
+    avatarStorageProvider: student?.avatarStorageProvider || undefined,
+    avatarBucket: student?.avatarBucket || "",
+    avatarStoragePath: student?.avatarStoragePath || "",
+    notes: student?.notes || {},
+    attendance: student?.attendance || {},
+    email: student?.email || "",
+    password: student?.password || "",
+    reports: student?.reports || [],
+    chapterProgress: student?.chapterProgress || {},
+    testMarks: student?.testMarks || [],
+    homeworkRecords: student?.homeworkRecords || [],
+    adminNotes: student?.adminNotes || "",
+    studyMaterialUsage: student?.studyMaterialUsage || [],
+  };
+}
+
+export default function App() {
+  // --- Authentication States ---
+  const [auth, setAuth] = useState<{
+    isAuthenticated: boolean;
+    role: "admin" | "student" | null;
+    loggedInStudentId: string | null;
+  }>(() => {
+    const cached = localStorage.getItem("tuition_auth_state");
+    if (cached) {
+      try {
+        return JSON.parse(cached);
+      } catch (e) {
+        console.error("Failed parsing auth state:", e);
+      }
+    }
+    return {
+      isAuthenticated: false,
+      role: null,
+      loggedInStudentId: null,
+    };
+  });
+
+  // Save auth changes to local persistence
+  useEffect(() => {
+    localStorage.setItem("tuition_auth_state", JSON.stringify(auth));
+  }, [auth]);
+
+  // Preload PDF.js library in background on mount for lightning-fast viewing
+  useEffect(() => {
+    preloadPdfJs();
+  }, []);
+
+  // Synchronize with Firebase Authentication state
+  useEffect(() => {
+    let unsubscribe: any = null;
+    async function initAuthSync() {
+      try {
+        const firebaseAuth = await getFirebaseAuth();
+        if (firebaseAuth) {
+          unsubscribe = firebaseAuth.onAuthStateChanged(async (firebaseUser: any) => {
+            if (firebaseUser) {
+              try {
+                const userDoc = await getUserDocument(firebaseUser.uid);
+                if (userDoc) {
+                  setAuth({
+                    isAuthenticated: true,
+                    role: userDoc.role.toLowerCase() as "admin" | "student",
+                    loggedInStudentId: userDoc.studentId || null,
+                  });
+                  if (userDoc.role.toLowerCase() === "student" && userDoc.studentId) {
+                    setSelectedStudentId(userDoc.studentId);
+                  }
+                }
+              } catch (err) {
+                console.error("Error synchronizing active Firebase user session:", err);
+              }
+            } else {
+              // Firebase is signed out. If local storage still says authenticated, let's sign out to keep sessions in sync
+              setAuth((prev) => {
+                if (prev.isAuthenticated) {
+                  return {
+                    isAuthenticated: false,
+                    role: null,
+                    loggedInStudentId: null,
+                  };
+                }
+                return prev;
+              });
+            }
+          });
+        }
+      } catch (err) {
+        console.error("Failed to initialize Firebase Auth synchronization:", err);
+      }
+    }
+    initAuthSync();
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
+
+  // Hook up real-time firestore subscription for students list (Admin) or single student (Student)
+  useEffect(() => {
+    if (!auth.isAuthenticated) return;
+
+    if (auth.role === "admin") {
+      const unsubscribe = subscribeToStudents((updatedStudents) => {
+        setStudents(updatedStudents);
+      });
+      return () => {
+        if (unsubscribe) unsubscribe();
+      };
+    } else if (auth.role === "student" && auth.loggedInStudentId) {
+      const unsubscribe = subscribeToStudent(auth.loggedInStudentId, (updatedStudent) => {
+        setStudents((prev) => {
+          const exists = prev.some((s) => s.id === updatedStudent.id);
+          if (exists) {
+            return prev.map((s) => s.id === updatedStudent.id ? updatedStudent : s);
+          } else {
+            return [updatedStudent];
+          }
+        });
+      });
+      return () => {
+        if (unsubscribe) unsubscribe();
+      };
+    }
+  }, [auth.isAuthenticated, auth.role, auth.loggedInStudentId]);
+
+  const handleLogin = (role: "admin" | "student", studentId: string | null) => {
+    setAuth({
+      isAuthenticated: true,
+      role,
+      loggedInStudentId: studentId,
+    });
+    if (role === "student" && studentId) {
+      setSelectedStudentId(studentId);
+    }
+  };
+
+  const handleLogout = () => {
+    // Sign out from Firebase
+    getFirebaseAuth().then((firebaseAuth) => {
+      if (firebaseAuth) {
+        firebaseAuth.signOut();
+      }
+    });
+
+    setAuth({
+      isAuthenticated: false,
+      role: null,
+      loggedInStudentId: null,
+    });
+    setSelectedStudentId(null);
+    setActiveSubject(null);
+    setActiveTab("Dashboard");
+  };
+
+  // --- Navigation States ---
+  const [activeTab, setActiveTab] = useState<"Dashboard" | "Students" | "AIInsights" | "My" | "Settings">("Dashboard");
+  const [selectedStudentId, setSelectedStudentId] = useState<string | null>(() => {
+    // If a student session was preserved, preset selected student ID
+    const cachedAuth = localStorage.getItem("tuition_auth_state");
+    if (cachedAuth) {
+      try {
+        const parsed = JSON.parse(cachedAuth);
+        if (parsed.role === "student") {
+          return parsed.loggedInStudentId;
+        }
+      } catch (e) {}
+    }
+    return null;
+  });
+  const [activeSubject, setActiveSubject] = useState<string | null>(null);
+  const [studentFilter, setStudentFilter] = useState<"All" | "Pending">("All");
+
+  // --- Display Theme State ---
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    return (localStorage.getItem("tuition_app_theme") as any) || "light";
+  });
+
+  const [visualTheme, setVisualTheme] = useState<string>(() => {
+    return localStorage.getItem("tuition_app_visual_theme") || "sapphire";
+  });
+
+  // --- Global QR Code for WhatsApp Billings ---
+  const [qrCode, setQrCode] = useState<string | null>(() => {
+    return localStorage.getItem("tuition_payment_qr_code");
+  });
+
+  // --- Student State with local persistence ---
+  const [students, setStudents] = useState<Student[]>(() => {
+    const cached = localStorage.getItem("tuition_students_data");
+    if (cached === null) {
+      return []; // Start clean with no students, no class tabs, and no names
+    }
+    
+    let parsed: Student[] = [];
+    try {
+      parsed = JSON.parse(cached);
+    } catch (e) {
+      console.error("Failed parsing student cache:", e);
+      return [];
+    }
+
+    // Initialize feeMonths for all students if not present
+    return parsed.map((student) => {
+      const normalized = normalizeStudent(student);
+      if (!normalized.feeMonths || Object.keys(normalized.feeMonths).length === 0) {
+        const regDate = normalized.registrationDate || "2026-06-01";
+        const [regYearStr, regMonthStr] = regDate.split("-");
+        const regYear = parseInt(regYearStr) || 2026;
+        const regMonthIdx = (parseInt(regMonthStr) || 6) - 1;
+
+        if (regYear === 2026 && regMonthIdx === 5) {
+          return {
+            ...normalized,
+            feeMonths: {
+              "June 2026": normalized.id === "student-3" || normalized.id === "student-5" ? "unpaid" : "paid"
+            }
+          };
+        }
+
+        return {
+          ...normalized,
+          feeMonths: {
+            "June 2026": normalized.id === "student-3" || normalized.id === "student-5" ? "unpaid" : "paid",
+            "July 2026": normalized.feePaidThisMonth ? "paid" : "unpaid"
+          }
+        };
+      }
+      return normalized;
+    });
+  });
+
+  // Find active student object if selected
+  const activeStudent = React.useMemo(() => {
+    const targetId = auth.role === "student" ? auth.loggedInStudentId : selectedStudentId;
+    const found = students.find((s) => s.id === targetId);
+    return found ? normalizeStudent(found) : null;
+  }, [students, selectedStudentId, auth.role, auth.loggedInStudentId]);
+
+  useEffect(() => {
+    if (auth.role === "student" && activeStudent?.id) {
+      const storedStudentTheme = localStorage.getItem(`tuition_student_visual_theme_${activeStudent.id}`);
+      const nextTheme = storedStudentTheme || localStorage.getItem("tuition_app_visual_theme") || "sapphire";
+      setVisualTheme(nextTheme);
+    } else {
+      const adminTheme = localStorage.getItem("tuition_app_visual_theme") || "sapphire";
+      setVisualTheme(adminTheme);
+    }
+  }, [auth.role, activeStudent?.id]);
+
+  // Save changes to local persistence
+  useEffect(() => {
+    localStorage.setItem("tuition_students_data", JSON.stringify(students));
+  }, [students]);
+
+  // Handle Theme application
+  useEffect(() => {
+    localStorage.setItem("tuition_app_theme", theme);
+    const root = window.document.documentElement;
+    
+    if (theme === "dark") {
+      root.classList.add("dark");
+      root.setAttribute("data-theme", "dark");
+    } else {
+      root.classList.remove("dark");
+      root.setAttribute("data-theme", "light");
+    }
+  }, [theme]);
+
+  const handleVisualThemeChange = (theme: string) => {
+    if (auth.role === "student" && activeStudent?.id) {
+      localStorage.setItem(`tuition_student_visual_theme_${activeStudent.id}`, theme);
+    } else {
+      localStorage.setItem("tuition_app_visual_theme", theme);
+    }
+    setVisualTheme(theme);
+  };
+
+  // Handle premium visual theme application
+  useEffect(() => {
+    if (auth.role !== "student") {
+      localStorage.setItem("tuition_app_visual_theme", visualTheme);
+    }
+    const root = window.document.documentElement;
+    root.classList.remove("theme-sunset", "theme-ocean", "theme-neon", "theme-cosmic", "theme-sapphire", "theme-olive", "theme-emerald", "theme-ruby", "theme-amber", "theme-gold", "theme-white");
+    root.classList.add(`theme-${visualTheme}`);
+  }, [auth.role, visualTheme]);
+
+  // Save QR Code to local storage
+  const handleSaveQrCode = (dataUrl: string | null) => {
+    setQrCode(dataUrl);
+    if (dataUrl) {
+      localStorage.setItem("tuition_payment_qr_code", dataUrl);
+    } else {
+      localStorage.removeItem("tuition_payment_qr_code");
+    }
+  };
+
+  // --- Modal States ---
+  const [isAddEditOpen, setIsAddEditOpen] = useState(false);
+  const [studentToEdit, setStudentToEdit] = useState<Student | null>(null);
+  const [isAvatarOpen, setIsAvatarOpen] = useState(false);
+  const [isTimerOpen, setIsTimerOpen] = useState(false);
+  const [isTimerActive, setIsTimerActive] = useState(false);
+
+  // Find notes for the current active subject
+  const currentSubjectNotes = React.useMemo(() => {
+    if (!activeStudent || !activeSubject) return [];
+    return activeStudent.notes?.[activeSubject] || [];
+  }, [activeStudent, activeSubject]);
+
+  // --- State Mutators ---
+
+  // Reset & Delete all application data
+  const handleResetData = () => {
+    setStudents([]);
+    setQrCode(null);
+    localStorage.removeItem("tuition_payment_qr_code");
+    localStorage.setItem("tuition_students_data", JSON.stringify([]));
+    setActiveTab("Dashboard");
+    setSelectedStudentId(null);
+    setActiveSubject(null);
+    setStudentFilter("All");
+  };
+
+  // Restore state from a backup file or Drive
+  const handleRestoreData = (restoredStudents: Student[], restoredQrCode: string | null) => {
+    setStudents(restoredStudents);
+    if (restoredQrCode) {
+      setQrCode(restoredQrCode);
+      localStorage.setItem("tuition_payment_qr_code", restoredQrCode);
+    }
+  };
+
+  // Add or update student details
+  const handleSaveStudent = async (
+    studentData: Omit<Student, "id" | "notes" | "attendance" | "feeMonths"> & { email?: string; password?: string }
+  ) => {
+    if (studentToEdit) {
+      // Edit mode
+      const updatedStudent = {
+        ...studentToEdit,
+        ...studentData,
+        notes: studentToEdit.notes || {},
+        attendance: studentToEdit.attendance || {},
+        feeMonths: studentToEdit.feeMonths || {},
+      };
+      setStudents((prev) =>
+        prev.map((s) => (s.id === studentToEdit.id ? updatedStudent : s))
+      );
+      await saveStudentDoc(updatedStudent);
+      setStudentToEdit(null);
+    } else {
+      // Add mode
+      const studentId = `student-${Date.now()}`;
+      const regDate = studentData.registrationDate ? new Date(studentData.registrationDate) : new Date();
+      const regMonth = regDate.getMonth(); // 0-11
+      const allMonths = [
+        "January 2026", "February 2026", "March 2026", "April 2026", "May 2026", "June 2026",
+        "July 2026", "August 2026", "September 2026", "October 2026", "November 2026", "December 2026"
+      ];
+      
+      const feeMonths: Record<string, "paid" | "unpaid" | "na"> = {};
+      allMonths.forEach((m, idx) => {
+        if (idx < regMonth) {
+          feeMonths[m] = "na";
+        }
+      });
+
+      const newStudent: Student = {
+        ...studentData,
+        id: studentId,
+        avatarColor: getRandomAvatarColor(),
+        feeMonths,
+        notes: studentData.enrolledSubjects.reduce((acc, subj) => {
+          acc[subj] = [];
+          return acc;
+        }, {} as Record<string, ChapterNote[]>),
+        attendance: {},
+      };
+
+      // Handle student Login account generation
+      if (studentData.email) {
+        try {
+          const tempPassword = studentData.password || "123456";
+          const uid = await createNewUserAuth(studentData.email, tempPassword);
+          
+          // Store uid in student document for later deletion
+          newStudent.uid = uid;
+          
+          const studentUserDoc = {
+            uid,
+            name: studentData.name,
+            email: studentData.email.toLowerCase(),
+            role: "Student",
+            studentId: studentId,
+            active: true,
+            temporaryPasswordRequired: true,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastLogin: null
+          };
+          await saveUserDocument(uid, studentUserDoc);
+        } catch (authErr: any) {
+          console.error("Failed to register student auth details:", authErr);
+        }
+      }
+
+      setStudents((prev) => [newStudent, ...prev]);
+      await saveStudentDoc(newStudent);
+    }
+  };
+
+  // Delete student
+  const handleDeleteStudent = async (studentId: string) => {
+    const student = students.find(s => s.id === studentId);
+    setStudents((prev) => prev.filter((s) => s.id !== studentId));
+    await deleteStudentDoc(studentId);
+    
+    // Delete student auth credentials if uid exists
+    if (student?.uid) {
+      await deleteUserAuthCredentials(student.uid);
+    }
+    
+    if (selectedStudentId === studentId) {
+      setSelectedStudentId(null);
+      setActiveSubject(null);
+    }
+  };
+
+  // Toggle Fee paid status for legacy fallback
+  const handleToggleFeePayment = async (studentId: string) => {
+    let updated: Student | null = null;
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id === studentId) {
+          const isPaid = !s.feePaidThisMonth;
+          const updatedMonths = { ...(s.feeMonths || {}) };
+          updatedMonths["July 2026"] = isPaid ? "paid" : "unpaid";
+          updated = {
+            ...s,
+            feePaidThisMonth: isPaid,
+            feeMonths: updatedMonths
+          };
+          return updated;
+        }
+        return s;
+      })
+    );
+    setTimeout(async () => {
+      if (updated) await saveStudentDoc(updated);
+    }, 50);
+  };
+
+  // Explicit monthly fee toggler
+  const handleSetFeeStatus = async (studentId: string, monthYear: string, status: "paid" | "unpaid" | "na", paymentDate?: string) => {
+    let updated: Student | null = null;
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id === studentId) {
+          const updatedMonths = { ...(s.feeMonths || {}) };
+          updatedMonths[monthYear] = status;
+          
+          const updatedPaymentDates = { ...(s.feePaymentDates || {}) };
+          if (status === "paid") {
+            updatedPaymentDates[monthYear] = paymentDate || new Date().toISOString().split("T")[0];
+          } else {
+            delete updatedPaymentDates[monthYear];
+          }
+
+          const isJulyPaid = monthYear === "July 2026" ? (status === "paid") : s.feePaidThisMonth;
+          updated = {
+            ...s,
+            feePaidThisMonth: isJulyPaid,
+            feeMonths: updatedMonths,
+            feePaymentDates: updatedPaymentDates
+          };
+          return updated;
+        }
+        return s;
+      })
+    );
+    setTimeout(async () => {
+      if (updated) await saveStudentDoc(updated);
+    }, 50);
+  };
+
+  const handleAddFeeMonth = async (studentId: string, month: string) => {
+    let updated: Student | null = null;
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id === studentId) {
+          const currentList = s.feeMonthsList && s.feeMonthsList.length > 0
+            ? s.feeMonthsList
+            : getMonthsUpToCurrent();
+          if (currentList.includes(month)) return s;
+          const updatedList = [...currentList, month];
+          const ALL_ACADEMIC_MONTHS = [
+            "March 2026", "April 2026", "May 2026", "June 2026", 
+            "July 2026", "August 2026", "September 2026", "October 2026", 
+            "November 2026", "December 2026", "January 2027", "February 2027", "March 2027"
+          ];
+          updatedList.sort((a, b) => ALL_ACADEMIC_MONTHS.indexOf(a) - ALL_ACADEMIC_MONTHS.indexOf(b));
+          updated = {
+            ...s,
+            feeMonthsList: updatedList
+          };
+          return updated;
+        }
+        return s;
+      })
+    );
+    setTimeout(async () => {
+      if (updated) await saveStudentDoc(updated);
+    }, 55);
+  };
+
+  // Toggle attendance for a date
+  const handleToggleAttendance = async (
+    studentId: string,
+    date: string,
+    isPresent: boolean | "na"
+  ) => {
+    let updated: Student | null = null;
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id === studentId) {
+          updated = {
+            ...s,
+            attendance: {
+              ...s.attendance,
+              [date]: isPresent,
+            },
+          };
+          return updated;
+        }
+        return s;
+      })
+    );
+    setTimeout(async () => {
+      if (updated) await saveStudentDoc(updated);
+    }, 50);
+  };
+
+  // Add chapter note with pdf
+  const handleAddNote = async (
+    studentId: string,
+    subject: string,
+    chapterNo: number,
+    chapterName: string,
+    pdfUrl: string,
+    pdfFileName: string,
+    isCompleted: boolean = false,
+    remark: string = ""
+  ) => {
+    let finalPdfUrl = pdfUrl;
+    let extraMetadata: Partial<ChapterNote> = {};
+    
+    if (pdfUrl && pdfUrl.trim().startsWith("{")) {
+      try {
+        const parsed = JSON.parse(pdfUrl);
+        finalPdfUrl = parsed.storagePath || parsed.downloadUrl || pdfUrl;
+        extraMetadata = {
+          storageProvider: "supabase",
+          bucket: parsed.bucket,
+          storagePath: parsed.storagePath,
+          fileName: parsed.fileName,
+          fileSize: parsed.fileSize,
+          mimeType: parsed.mimeType,
+          uploadedAt: parsed.uploadedAt,
+          uploadedBy: parsed.uploadedBy,
+          downloadUrl: parsed.downloadUrl
+        };
+      } catch (e) {
+        console.error("[handleAddNote] Failed to parse JSON metadata for pdfUrl:", e);
+      }
+    }
+
+    const newNote: ChapterNote = {
+      id: `note-${Date.now()}`,
+      chapterNo,
+      chapterName,
+      pdfUrl: finalPdfUrl,
+      pdfFileName,
+      isCompleted,
+      remark,
+      createdAt: new Date().toISOString(),
+      ...extraMetadata
+    };
+
+    let updated: Student | null = null;
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id === studentId) {
+          const subjectNotes = s.notes[subject] || [];
+          updated = {
+            ...s,
+            notes: {
+              ...s.notes,
+              [subject]: [...subjectNotes, newNote],
+            },
+          };
+          return updated;
+        }
+        return s;
+      })
+    );
+    setTimeout(async () => {
+      if (updated) await saveStudentDoc(updated);
+    }, 50);
+  };
+
+  // Delete note from a subject
+  const handleDeleteNote = async (
+    studentId: string,
+    subject: string,
+    noteId: string
+  ) => {
+    const targetStudent = students.find((s) => s.id === studentId);
+    if (!targetStudent) {
+      console.error(`[Delete Note Flow] Student with ID "${studentId}" not found.`);
+      throw new Error(`Student with ID "${studentId}" not found.`);
+    }
+
+    const subjectNotes = targetStudent.notes?.[subject] || [];
+    const noteToDelete = subjectNotes.find((n) => n.id === noteId);
+    if (!noteToDelete) {
+      console.warn(`[Delete Note Flow] Chapter note ID "${noteId}" not found in subject "${subject}".`);
+      return;
+    }
+
+    const bucket = noteToDelete.bucket || "academy-connect-files";
+    const rawStoragePath = noteToDelete.storagePath || noteToDelete.pdfUrl || noteToDelete.downloadUrl || "";
+
+    console.log(`[Delete Note Flow] Initiating chapter note deletion process:`);
+    console.log(`[Delete Note Flow] - Student ID: "${studentId}"`);
+    console.log(`[Delete Note Flow] - Subject: "${subject}"`);
+    console.log(`[Delete Note Flow] - Note ID: "${noteId}" (Chapter ${noteToDelete.chapterNo}: ${noteToDelete.chapterName})`);
+    console.log(`[Delete Note Flow] - Bucket Name: "${bucket}"`);
+    console.log(`[Delete Note Flow] - Storage Path / Raw URL: "${rawStoragePath}"`);
+    console.log(`[Delete Note Flow] - Firestore Student Document ID: "${targetStudent.id}"`);
+
+    // A. Delete PDF from Supabase Storage first
+    let storageResult: any = null;
+    if (rawStoragePath) {
+      try {
+        storageResult = await deleteFileFromStorage(rawStoragePath, bucket);
+        console.log(`[Delete Note Flow] Supabase Storage Removal Result:`, storageResult);
+      } catch (storageErr: any) {
+        console.error(`[Delete Note Flow] Supabase Storage Removal Error:`, storageErr);
+        throw new Error(`Failed to delete PDF from storage: ${storageErr.message || storageErr}`);
+      }
+    } else {
+      console.warn(`[Delete Note Flow] No storagePath or URL found on note object. Proceeding directly to document cleanup.`);
+    }
+
+    // B. Clear Cache Storage entries for this note
+    try {
+      if ("caches" in window) {
+        const cache = await caches.open("student-pdf-cache");
+        const urlsToClear = [
+          noteToDelete.pdfUrl,
+          noteToDelete.storagePath,
+          noteToDelete.downloadUrl,
+          rawStoragePath
+        ].filter(Boolean) as string[];
+
+        for (const url of urlsToClear) {
+          try {
+            await cache.delete(url);
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
+    } catch (cacheErr) {
+      console.warn(`[Delete Note Flow] Cache clear warning:`, cacheErr);
+    }
+
+    // C. Remove note from student's notes dictionary
+    const updatedSubjectNotes = subjectNotes.filter((n) => n.id !== noteId);
+    const updatedStudent: Student = {
+      ...targetStudent,
+      notes: {
+        ...targetStudent.notes,
+        [subject]: updatedSubjectNotes,
+      },
+    };
+
+    // D. Refresh UI immediately across Admin and Student views
+    setStudents((prev) => prev.map((s) => (s.id === studentId ? updatedStudent : s)));
+
+    // E. Save updated student document to Firestore
+    try {
+      await saveStudentDoc(updatedStudent);
+      console.log(`[Delete Note Flow] Firestore Response: Student document "${studentId}" successfully updated. Remaining notes for "${subject}": ${updatedSubjectNotes.length}.`);
+    } catch (dbErr: any) {
+      console.error(`[Delete Note Flow] Firestore Response Error: Failed to save updated document for student "${studentId}":`, dbErr);
+      // Revert local UI state on Firestore failure
+      setStudents((prev) => prev.map((s) => (s.id === studentId ? targetStudent : s)));
+      throw new Error(`Failed to update Firestore database document: ${dbErr.message || dbErr}`);
+    }
+  };
+
+  // Toggle note complete state
+  const handleToggleNoteComplete = async (
+    studentId: string,
+    subject: string,
+    noteId: string
+  ) => {
+    let updated: Student | null = null;
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id === studentId) {
+          const subjectNotes = s.notes[subject] || [];
+          updated = {
+            ...s,
+            notes: {
+              ...s.notes,
+              [subject]: subjectNotes.map((n) => {
+                if (n.id === noteId) {
+                  return { ...n, isCompleted: !n.isCompleted };
+                }
+                return n;
+              }),
+            },
+          };
+          return updated;
+        }
+        return s;
+      })
+    );
+    setTimeout(async () => {
+      if (updated) await saveStudentDoc(updated);
+    }, 50);
+  };
+
+  // Update chapter note remark
+  const handleUpdateChapterRemark = async (
+    studentId: string,
+    subject: string,
+    noteId: string,
+    remark: string
+  ) => {
+    let updated: Student | null = null;
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id === studentId) {
+          const subjectNotes = s.notes[subject] || [];
+          updated = {
+            ...s,
+            notes: {
+              ...s.notes,
+              [subject]: subjectNotes.map((n) => {
+                if (n.id === noteId) {
+                   return { ...n, remark };
+                }
+                return n;
+              }),
+            },
+          };
+          return updated;
+        }
+        return s;
+      })
+    );
+    setTimeout(async () => {
+      if (updated) await saveStudentDoc(updated);
+    }, 50);
+  };
+
+  // Update full student record
+  const handleUpdateStudent = async (updatedStudent: Student) => {
+    setStudents((prev) =>
+      prev.map((s) => (s.id === updatedStudent.id ? updatedStudent : s))
+    );
+    await saveStudentDoc(updatedStudent);
+  };
+
+  // Update enrolled subjects directly
+  const handleUpdateEnrolledSubjects = async (
+    studentId: string,
+    enrolledSubjects: string[]
+  ) => {
+    let updated: Student | null = null;
+    setStudents((prev) =>
+      prev.map((s) => {
+        if (s.id === studentId) {
+          updated = {
+            ...s,
+            enrolledSubjects,
+          };
+          return updated;
+        }
+        return s;
+      })
+    );
+    setTimeout(async () => {
+      if (updated) await saveStudentDoc(updated);
+    }, 50);
+  };
+
+  // Save profile photo
+  const handleSaveProfilePhoto = async (studentId: string, dataUrl: string) => {
+    const studentToUpdate = students.find((s) => s.id === studentId);
+    if (!studentToUpdate) return;
+
+    let updatedStudent: Student;
+
+    try {
+      if (studentToUpdate.avatarStoragePath) {
+        // Delete old avatar from storage to avoid orphan files
+        await deleteFileFromStorage(studentToUpdate.avatarStoragePath);
+      }
+
+      // Upload base64 image as file to Storage
+      const metadata = await uploadProfilePhoto(studentId, dataUrl, `${studentId}_avatar.png`);
+
+      updatedStudent = {
+        ...studentToUpdate,
+        avatarUrl: metadata.downloadUrl,
+        avatarStorageProvider: "supabase",
+        avatarBucket: metadata.bucket,
+        avatarStoragePath: metadata.storagePath,
+      };
+    } catch (err) {
+      console.error("[App] Failed to save profile photo to storage, using dataUrl fallback:", err);
+      updatedStudent = {
+        ...studentToUpdate,
+        avatarUrl: dataUrl,
+      };
+    }
+
+    // 1. Save to Firestore / local storage immediately (triggers real-time snapshot sync to all connected clients)
+    await saveStudentDoc(updatedStudent);
+
+    // 2. Update local state
+    setStudents((prev) =>
+      prev.map((s) => (s.id === studentId ? updatedStudent : s))
+    );
+  };
+
+  // Triggering edit from student list
+  const handleTriggerEdit = (student: Student) => {
+    setStudentToEdit(student);
+    setIsAddEditOpen(true);
+  };
+
+  // Triggering add modal
+  const handleTriggerAdd = () => {
+    setStudentToEdit(null);
+    setIsAddEditOpen(true);
+  };
+
+  // Fallback random colors for avatars
+  const getRandomAvatarColor = () => {
+    const colors = [
+      "bg-blue-600",
+      "bg-sky-600",
+      "bg-indigo-600",
+      "bg-blue-800",
+      "bg-cyan-600",
+    ];
+    return colors[Math.floor(Math.random() * colors.length)];
+  };
+
+  // Helper to trigger navigation to pending students directly
+  const handleNavigateToPendingStudents = () => {
+    setActiveTab("Students");
+    setStudentFilter("Pending");
+    setSelectedStudentId(null);
+    setActiveSubject(null);
+  };
+
+  if (!auth.isAuthenticated) {
+    return (
+      <div className={`min-h-screen bg-slate-100 dark:bg-[#090d16] flex items-center justify-center p-4 font-sans antialiased selection:bg-blue-500 selection:text-white theme-${visualTheme}`} id="app-shell">
+        <Login
+          onLoginSuccess={(role, studentId, userId) => {
+            handleLogin(role.toLowerCase() as "admin" | "student", studentId);
+          }}
+        />
+      </div>
+    );
+  }
+
+  const renderMainContent = () => {
+    if (auth.role === "admin" && activeSubject && activeStudent) {
+      return (
+        <SubjectNotes
+          subject={activeSubject}
+          studentName={activeStudent.name}
+          studentId={activeStudent.id}
+          notes={currentSubjectNotes}
+          onBack={() => setActiveSubject(null)}
+          onAddNote={(chapterNo, chapterName, pdfUrl, pdfFileName) =>
+            handleAddNote(activeStudent.id, activeSubject, chapterNo, chapterName, pdfUrl, pdfFileName)
+          }
+          onDeleteNote={(noteId) =>
+            handleDeleteNote(activeStudent.id, activeSubject, noteId)
+          }
+          isAdmin={auth.role === "admin"}
+          enrolledSubjects={activeStudent.enrolledSubjects}
+          onSelectSubject={(subj) => setActiveSubject(subj)}
+        />
+      );
+    }
+
+    if (auth.role === "admin") {
+      if (selectedStudentId && activeStudent) {
+        return (
+          <StudentDetails
+            student={activeStudent}
+            qrCode={qrCode}
+            isAdmin={auth.role === "admin"}
+            onBack={() => {
+              setSelectedStudentId(null);
+              setActiveTab("Students");
+            }}
+            onSelectSubject={(subject) => setActiveSubject(subject)}
+            onToggleAttendance={(date, isPresent) =>
+              handleToggleAttendance(activeStudent.id, date, isPresent)
+            }
+            onToggleFeePayment={() => handleToggleFeePayment(activeStudent.id)}
+            onSetFeeStatus={(monthYear, status, paymentDate) => handleSetFeeStatus(activeStudent.id, monthYear, status, paymentDate)}
+            onAddFeeMonth={(month) => handleAddFeeMonth(activeStudent.id, month)}
+            onOpenAvatarModal={() => setIsAvatarOpen(true)}
+            onAddNote={(subject, chapterNo, chapterName, pdfUrl, pdfFileName, isCompleted, remark) =>
+              handleAddNote(activeStudent.id, subject, chapterNo, chapterName, pdfUrl, pdfFileName, isCompleted, remark)
+            }
+            onToggleChapterCompletion={(subject, noteId) => handleToggleNoteComplete(activeStudent.id, subject, noteId)}
+            onDeleteNote={(subject, noteId) => handleDeleteNote(activeStudent.id, subject, noteId)}
+            onUpdateChapterRemark={(subject, noteId, remark) => handleUpdateChapterRemark(activeStudent.id, subject, noteId, remark)}
+            onUpdateEnrolledSubjects={(subjects) => handleUpdateEnrolledSubjects(activeStudent.id, subjects)}
+          />
+        );
+      }
+
+      return (
+        <>
+          {activeTab === "Dashboard" && (
+            <Dashboard
+              students={students}
+              onRefresh={() => {
+                setStudents([...students]);
+              }}
+              onNavigateToStudents={handleNavigateToPendingStudents}
+              onNavigateToStudentDetails={(id) => {
+                setSelectedStudentId(id);
+                setActiveSubject(null);
+              }}
+              onToggleAttendance={(studentId, date, isPresent) =>
+                handleToggleAttendance(studentId, date, isPresent)
+              }
+            />
+          )}
+
+          {activeTab === "Students" && (
+            <StudentList
+              students={students}
+              filter={studentFilter}
+              onFilterChange={setStudentFilter}
+              onSelectStudent={(id) => {
+                setSelectedStudentId(id);
+                setActiveSubject(null);
+              }}
+              onEditStudent={handleTriggerEdit}
+              onDeleteStudent={handleDeleteStudent}
+              onAddStudent={handleTriggerAdd}
+            />
+          )}
+
+          {activeTab === "AIInsights" && (
+            <AIInsights students={students} />
+          )}
+
+          {activeTab === "Settings" && (
+            <Settings 
+              theme={theme} 
+              onThemeChange={setTheme} 
+              visualTheme={visualTheme}
+              onVisualThemeChange={handleVisualThemeChange}
+              qrCode={qrCode}
+              onQrCodeChange={handleSaveQrCode}
+              onResetData={handleResetData} 
+              students={students}
+              onRestoreData={handleRestoreData}
+              isAdmin={true}
+            />
+          )}
+        </>
+      );
+    }
+
+    if (activeStudent) {
+      return (
+        <>
+          {activeTab === "Dashboard" && (
+            <StudentDashboard
+              student={activeStudent}
+              onSelectSubject={(subject) => {
+                setActiveSubject(subject);
+                setActiveTab("My");
+              }}
+              onNavigateToTab={setActiveTab}
+              onOpenAvatarModal={() => setIsAvatarOpen(true)}
+              onUpdateChapterRemark={(subject, noteId, remark) => handleUpdateChapterRemark(activeStudent.id, subject, noteId, remark)}
+              onDeleteNote={(subject, noteId) => handleDeleteNote(activeStudent.id, subject, noteId)}
+              onUpdateStudent={handleUpdateStudent}
+              isAdmin={false}
+            />
+          )}
+
+          {activeTab === "My" && (
+            <StudentMyTab
+              student={activeStudent}
+              initialSubject={activeSubject}
+              onSelectSubject={(subject) => setActiveSubject(subject)}
+              onUpdateChapterRemark={(subject, noteId, remark) => handleUpdateChapterRemark(activeStudent.id, subject, noteId, remark)}
+              onDeleteNote={(subject, noteId) => handleDeleteNote(activeStudent.id, subject, noteId)}
+              onUpdateStudent={handleUpdateStudent}
+              isAdmin={false}
+            />
+          )}
+
+          {activeTab === "Settings" && (
+            <Settings 
+              theme={theme} 
+              onThemeChange={setTheme} 
+              visualTheme={visualTheme}
+              onVisualThemeChange={handleVisualThemeChange}
+              qrCode={qrCode}
+              onQrCodeChange={handleSaveQrCode}
+              onResetData={handleResetData} 
+              students={students}
+              onRestoreData={handleRestoreData}
+              isAdmin={false}
+            />
+          )}
+        </>
+      );
+    }
+
+    return null;
+  };
+
+  return (
+    <div className={`min-h-screen bg-slate-100 dark:bg-[#090d16] flex items-center justify-center p-0 sm:p-6 md:p-8 font-sans antialiased selection:bg-blue-500 selection:text-white theme-${visualTheme}`} id="app-shell">
+      {/* 
+        Sleek, responsive mockup frame container.
+        Scales up dynamically on wider devices, but feels like an elegant native app.
+      */}
+      <div 
+        id="main-frame"
+        className="relative w-full max-w-lg sm:max-w-xl md:max-w-2xl h-screen sm:h-[850px] sm:max-h-[900px] bg-white dark:bg-[#111827] sm:rounded-2xl border-0 sm:border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col shadow-2xl transition-all duration-300"
+        style={{ contentVisibility: "auto" }}
+      >
+        {/* Sleek top banner showing user role and logout */}
+        <div className="px-4 py-3 bg-slate-50 dark:bg-[#0d131f] border-b border-slate-150 dark:border-slate-800/80 flex items-center justify-between z-20 shrink-0" id="session-top-header">
+          <div className="flex items-center gap-2.5">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+            </span>
+            <span className="text-[10px] font-extrabold uppercase tracking-[0.32em] text-slate-600 dark:text-slate-300">
+              {auth.role === "admin" ? "Admin Console" : "Student Portal"}
+            </span>
+            {auth.role === "admin" && (
+              <span className="rounded-full border border-slate-200/70 bg-white/80 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.2em] text-slate-500 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-400">
+                v{APP_VERSION}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {auth.role !== "admin" && (
+              <button
+                onClick={() => setIsTimerOpen(true)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer border ${
+                  isTimerActive
+                    ? "text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 border-emerald-200 dark:border-emerald-800 shadow-sm"
+                    : "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30 hover:bg-blue-100 dark:hover:bg-blue-900/50 border-blue-100 dark:border-blue-900/40"
+                }`}
+                title="Open Study Timer & Stopwatch"
+              >
+                {isTimerActive ? (
+                  <Clock className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
+                ) : (
+                  <Timer className="w-3.5 h-3.5 text-blue-500" />
+                )}
+                <span>Timer</span>
+              </button>
+            )}
+            <button
+              onClick={handleLogout}
+              className="px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/20 hover:bg-rose-100 dark:hover:bg-rose-950/40 rounded-lg transition-all cursor-pointer border border-rose-100/30"
+            >
+              Logout
+            </button>
+          </div>
+        </div>
+
+
+
+        {/* Scrollable primary content viewport */}
+        <div className="flex-1 overflow-y-auto px-4 sm:px-6 pt-5 sm:pt-6 pb-24" id="main-content-scroll">
+          
+          {/* View Routing Engine */}
+          {renderMainContent()}
+        </div>
+
+        {/* 
+          Global Bottom Navigation:
+          NOW FIXED AT BOTTOM ALWAYS, for both admin and students.
+          Allows instant navigation back or tabs swap!
+        */}
+        {auth.role !== null && (
+          <nav 
+            className="absolute bottom-0 left-0 right-0 bg-white dark:bg-[#111827] border-t border-slate-200 dark:border-slate-800 py-3 px-4 sm:px-6 flex justify-around items-center z-30 shadow-lg"
+            id="bottom-navigation-bar"
+          >
+            {/* Nav Tab 1: Dashboard */}
+            <button
+              onClick={() => {
+                setActiveTab("Dashboard");
+                if (auth.role === "admin") {
+                  setSelectedStudentId(null);
+                }
+                setActiveSubject(null);
+              }}
+              className={`flex flex-col items-center gap-0.5 sm:gap-1 transition-all flex-1 py-1 ${
+                activeTab === "Dashboard" && (auth.role === "student" || !selectedStudentId)
+                  ? "text-blue-600 dark:text-blue-400 scale-102 font-bold"
+                  : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+              }`}
+              id="nav-btn-dashboard"
+            >
+              <LayoutDashboard className="w-5 h-5 stroke-[2]" />
+              <span className="text-[9px] sm:text-[10px] font-bold tracking-wider uppercase mt-0.5">
+                {auth.role === "student" ? "dashboard" : "Dashboard"}
+              </span>
+            </button>
+
+            {/* Nav Tab 2: My Study Space (Students only) */}
+            {auth.role === "student" && (
+              <button
+                onClick={() => {
+                  setActiveTab("My");
+                  setActiveSubject(null);
+                }}
+                className={`flex flex-col items-center gap-0.5 sm:gap-1 transition-all flex-1 py-1 ${
+                  activeTab === "My"
+                    ? "text-blue-600 dark:text-blue-400 scale-102 font-bold"
+                    : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                }`}
+                id="nav-btn-my"
+              >
+                <BookOpen className="w-5 h-5 stroke-[2]" />
+                <span className="text-[9px] sm:text-[10px] font-bold tracking-wider uppercase mt-0.5">
+                  My Study Space
+                </span>
+              </button>
+            )}
+
+            {/* Nav Tab 3: Students (Admin only) */}
+            {auth.role === "admin" && (
+              <button
+                onClick={() => {
+                  setActiveTab("Students");
+                  setSelectedStudentId(null);
+                  setActiveSubject(null);
+                }}
+                className={`flex flex-col items-center gap-0.5 sm:gap-1 transition-all flex-1 py-1 ${
+                  (activeTab === "Students" || selectedStudentId)
+                    ? "text-blue-600 dark:text-blue-400 scale-102 font-bold"
+                    : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                }`}
+                id="nav-btn-students"
+              >
+                <Users className="w-5 h-5 stroke-[2]" />
+                <span className="text-[9px] sm:text-[10px] font-bold tracking-wider uppercase mt-0.5">
+                  Students
+                </span>
+              </button>
+            )}
+
+            {/* Nav Tab 4: AI Insights (Admin only) */}
+            {auth.role === "admin" && (
+              <button
+                onClick={() => {
+                  setActiveTab("AIInsights");
+                  setSelectedStudentId(null);
+                  setActiveSubject(null);
+                }}
+                className={`flex flex-col items-center gap-0.5 sm:gap-1 transition-all flex-1 py-1 cursor-pointer ${
+                  activeTab === "AIInsights"
+                    ? "text-blue-600 dark:text-blue-400 scale-102 font-bold"
+                    : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                }`}
+                id="nav-btn-ai-insights"
+              >
+                <Sparkles className="w-5 h-5 stroke-[2]" />
+                <span className="text-[9px] sm:text-[10px] font-bold tracking-wider uppercase mt-0.5">
+                  AI Insights
+                </span>
+              </button>
+            )}
+
+            {/* Nav Tab 3: Settings */}
+            <button
+              onClick={() => {
+                setActiveTab("Settings");
+                if (auth.role === "admin") {
+                  setSelectedStudentId(null);
+                }
+                setActiveSubject(null);
+              }}
+              className={`flex flex-col items-center gap-0.5 sm:gap-1 transition-all flex-1 py-1 ${
+                activeTab === "Settings"
+                  ? "text-blue-600 dark:text-blue-400 scale-102 font-bold"
+                  : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+              }`}
+              id="nav-btn-settings"
+            >
+              <SettingsIcon className="w-5 h-5 stroke-[2]" />
+              <span className="text-[9px] sm:text-[10px] font-bold tracking-wider uppercase mt-0.5">
+                Settings
+              </span>
+            </button>
+          </nav>
+        )}
+
+        {/* --- Floating / Portal Modals --- */}
+        
+        {/* Register/Edit Student Dialog */}
+        <AddEditStudentModal
+          isOpen={isAddEditOpen}
+          onClose={() => setIsAddEditOpen(false)}
+          onSave={handleSaveStudent}
+          studentToEdit={studentToEdit}
+        />
+
+        {/* Update Profile Avatar Sheet */}
+        {activeStudent && (
+          <ProfilePictureModal
+            isOpen={isAvatarOpen}
+            onClose={() => setIsAvatarOpen(false)}
+            onSelectPhoto={(dataUrl) => handleSaveProfilePhoto(activeStudent.id, dataUrl)}
+          />
+        )}
+
+        {/* Study Timer & Stopwatch Modal */}
+        <StudyTimerModal
+          isOpen={isTimerOpen}
+          onClose={() => setIsTimerOpen(false)}
+          onTimerRunningChange={setIsTimerActive}
+        />
+      </div>
+    </div>
+  );
+}
